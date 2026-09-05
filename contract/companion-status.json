@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "The shape of GET /api/companion/status that Cubie's bridge consumes.",
+    "Not documentation: scripts/check_companion_contract.py compares this against",
+    "Virtual-Office's server/src/companion/companionStatus.ts and fails on drift.",
+    "The bridge maps these fields onto device MCP calls (posture, LEDs, screen), so",
+    "a rename upstream is a totem that quietly stops reflecting the office."
+  ],
+  "source": {
+    "repo": "samuelblackbourn/Virtual-Office",
+    "file": "server/src/companion/companionStatus.ts",
+    "taken_from_commit": "362cb5bf922a877f3b77ab4e77d7ff4250d7b6ad",
+    "file_blob_sha": "923754b72e2b41b3a1146a7b5a6660ca6e87eb66",
+    "_verify": "git rev-parse <commit>:<file> should equal file_blob_sha"
+  },
+  "fields": {
+    "present": "boolean?",
+    "pendingApprovals": "array<{id:string,oneLine:string}>",
+    "pendingTotal": "number",
+    "agentsRunning": "number",
+    "needsYou": "boolean",
+    "founderTasks": "array<{id:string,title:string,status:enum}>",
+    "founderTasksTotal": "number",
+    "mood": "enum",
+    "ts": "number"
+  },
+  "mood_values": ["calm", "busy", "attention"],
+  "founder_task_status_values": ["blocked", "review"],
+  "caps": {
+    "COMPANION_MAX_PENDING": 5,
+    "COMPANION_MAX_ONE_LINE": 120,
+    "COMPANION_MAX_FOUNDER_TASKS": 3,
+    "COMPANION_MAX_TITLE": 80
+  },
+  "notes": [
+    "present is ABSENT when unknown, false when the desk is known empty. Cubie must",
+    "not collapse them: absent means fall back to the office's own routing.",
+    "pendingTotal and founderTasksTotal may exceed their list lengths -- the lists",
+    "are capped. Showing a short list as if it were everything is the failure those",
+    "fields exist to prevent.",
+    "blocked and review are different actions, not shades of one: blocked means a",
+    "team asked a question and cannot continue; review means work is delivered and",
+    "waiting to be accepted. Cubie must say which, or it sends its owner to do",
+    "something without saying what.",
+    "ts is epoch MILLISECONDS (~1.8e12), so it needs 64 bits. This bit the K10:",
+    "`long` is 32-bit on an ESP32 and 64-bit on a test host, so strtol saturated on",
+    "the device while every host test passed.",
+    "mood is decided server-side. Deriving it on-device would be a second",
+    "definition of 'busy', free to disagree with the wall."
+  ]
+}
