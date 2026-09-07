@@ -165,25 +165,11 @@ if [ "$need_vendor" = 1 ]; then
   rm -rf "$tmp"
   trap - EXIT
 
-  if [ ! -f "$M5DIR/VENDORED.md" ]; then
-    cat > "$M5DIR/VENDORED.md" <<VEOF
-# Vendored: M5Stack StackChan avatar
-
-\`avatar/\` is copied **unmodified** from M5Stack's official StackChan firmware.
-\`utils/object_pool.h\` is copied for \`ObjectPool<Decorator>\`, which
-\`avatar/avatar/decorator.h\` includes as \`../../utils/object_pool.h\` -- the
-directory layout here preserves that relative path so no edit is needed.
-
-| | |
-| --- | --- |
-| Upstream | $M5_REPO |
-| Path | \`firmware/main/stackchan/avatar/\` |
-| Commit | \`$M5_PIN\` |
-| Licence | MIT, Copyright (c) 2026 M5Stack Technology CO LTD |
-
-Written by firmware/build.sh. \`hal/\` is ours and must not be overwritten.
-VEOF
-  fi
+  # No VENDORED.md is written here. apply-live-avatar-step1.sh writes it
+  # unconditionally a few lines below, so anything written now is overwritten
+  # before the build sees it -- and a dead heredoc that LOOKS like the
+  # provenance record is worse than none, because the next person to bump the
+  # pin would edit it and watch nothing happen.
 fi
 
 # ------------------------------------------------------- 3. the patch set --
@@ -214,6 +200,22 @@ done
 # edit reintroduced the bad form.
 say "fix-shy-ctor.sh (assertion: expect \"already correct\")"
 bash "$HERE/fix-shy-ctor.sh" "$FW"
+
+# --------------------------------------- 3b. the provenance record is true --
+# step1 hardcodes the M5 commit in VENDORED.md. build.conf carries it too, and
+# the vendor step above skips when the file already names the pin. If those two
+# ever disagree, the sources copied in are one commit and the record says
+# another -- a lying provenance record in the one file whose whole job is
+# provenance. Fail rather than ship that.
+say "provenance"
+if ! grep -q "$M5_PIN" "$M5DIR/VENDORED.md"; then
+  recorded=$(grep -oE '[0-9a-f]{40}' "$M5DIR/VENDORED.md" | head -1)
+  die "VENDORED.md records ${recorded:-no commit}, but build.conf pins $M5_PIN.
+       apply-live-avatar-step1.sh hardcodes the commit it writes there, so
+       bumping M5_PIN alone is not enough -- update the Commit row in that
+       script's heredoc to match, then re-run with --fresh."
+fi
+echo "  VENDORED.md records $M5_PIN, matching build.conf"
 
 # ------------------------------------------------ 4. build configuration --
 # These two entries reached the working build from a source nobody could name,
