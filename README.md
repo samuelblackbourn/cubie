@@ -30,8 +30,31 @@ around:
 
 ```
 git -C ~/cubie pull
-bash ~/cubie/firmware/<script>.sh
+bash ~/cubie/firmware/fix-shy-ctor.sh
 ```
+
+Name the script you actually want. The line above used to read
+`firmware/<script>.sh`, which got pasted into a shell literally and failed —
+placeholders in angle brackets do not survive a copy-paste workflow.
+
+`tools/cubie-call.py` calls a single gateway tool from the command line. The
+gateway speaks streamable-HTTP MCP, so a bare `curl` POST is answered with
+`Bad Request: Missing session ID` — that is the `initialize` handshake missing,
+not an auth failure. Run it with the gateway's own interpreter, which is where
+the `mcp` package lives:
+
+```
+export STACKCHAN_TOKEN=$(sudo sed -nE 's/^STACKCHAN_TOKEN=//p' \
+    /etc/stackchan-gateway.env | tr -d '\042\047')
+~/stackchan-gateway/bin/python ~/cubie/tools/cubie-call.py get_status
+~/stackchan-gateway/bin/python ~/cubie/tools/cubie-call.py \
+    set_avatar '{"face":"embarrassed"}'
+```
+
+That `sed` is the only supported way to get the token into a shell: it never
+prints the value. The gateway's token lives in `/etc/stackchan-gateway.env` as
+`STACKCHAN_TOKEN` and is the same value the bridge needs in
+`/etc/cubie-bridge.env`.
 
 ## The shape of it
 
