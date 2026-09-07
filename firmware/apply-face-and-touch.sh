@@ -73,13 +73,16 @@ edits = [
     // decorator is what the factory firmware actually showed.
     //
     // destroyAfterMs = 0 means no self-destruct: this is a state, not a
-    // reaction, so we own its lifetime. Avatar::update() animates it through
-    // the board's 30 fps tick.
+    // reaction, so we own its lifetime.
+    //
+    // Two arguments, not three: ShyDecorator takes no animationIntervalMs
+    // because it does not animate -- it is two static blush images, left and
+    // right, unlike Heart/Angry/Sweat/Dizzy which cycle frames.
     const bool want_shy = (face_index == 5);
     auto* panel = impl_->avatar.getPanel();
     if (want_shy && impl_->shy_id < 0 && panel != nullptr) {
         impl_->shy_id = impl_->avatar.addDecorator(
-            std::make_unique<stackchan::avatar::ShyDecorator>(panel->get(), 0, 500));
+            std::make_unique<stackchan::avatar::ShyDecorator>(panel->get(), 0));
         ESP_LOGI(TAG, "shy decorator added (id=%d)", impl_->shy_id);
     } else if (!want_shy && impl_->shy_id >= 0) {
         impl_->avatar.removeDecorator(impl_->shy_id);
