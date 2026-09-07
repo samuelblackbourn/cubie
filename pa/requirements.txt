@@ -1,0 +1,13 @@
+# Cubie's PA service. Pinned loosely: these are all mature and the risk of a
+# surprise is lower than the risk of pinning ourselves onto an unpatched
+# version of an HTTP client.
+#
+# piper-tts pulls onnxruntime, which is the large one (~40 MB). The VOICE
+# MODEL is a separate ~60 MB download and is NOT a pip dependency -- fetch it
+# once with:
+#   python -m piper.download_voices en_GB-alba-medium --data-dir ~/.local/share/piper-voices
+httpx>=0.27
+piper-tts>=1.2
+
+# Testing only.
+pytest>=8.0

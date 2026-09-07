@@ -1,14 +1,16 @@
 PYTHON ?= python3
 VO_REPO ?= /workspace/virtual-office
 
-.PHONY: help check check-contract check-bridge check-idempotent bridge-install
+.PHONY: help check check-contract check-bridge check-pa check-idempotent bridge-install pa-install
 
 help:
 	@echo "check           the green bar (no CI by design, same as the sibling repos)"
 	@echo "check-contract  fail if /api/companion/status has drifted upstream"
 	@echo "check-bridge    typecheck + test the bridge"
 	@echo "check-idempotent  prove the firmware patch chain converges (clones, ~minutes)"
+	@echo "check-pa        typecheck-free unit tests for the PA service"
 	@echo "bridge-install  npm install in bridge/"
+	@echo "pa-install      create pa/.venv and install requirements"
 	@echo ""
 	@echo "check-contract needs the upstream shape. Either:"
 	@echo "  VO_REPO=/path/to/virtual-office make check-contract"
@@ -34,7 +36,24 @@ check-bridge:
 
 # The contract guard runs FIRST: if the office's payload has drifted, the
 # bridge's types are wrong and its tests are asserting the wrong shape.
-check: check-contract check-bridge
+# The PA service's own venv. Kept separate from the gateway's: the gateway is
+# a pinned PyPI release we deliberately do not touch, and installing our
+# dependencies into it would be exactly the kind of quiet coupling that makes
+# "it is upstream, run it as-is" stop being true.
+pa-install:
+	$(PYTHON) -m venv pa/.venv
+	pa/.venv/bin/pip install --quiet --upgrade pip
+	pa/.venv/bin/pip install --quiet -r pa/requirements.txt
+
+# Runs against pa/.venv when it exists, and says how to make one when it does
+# not -- rather than falling back to a system python that may or may not have
+# httpx and reporting a misleading pass or failure.
+check-pa:
+	@test -x pa/.venv/bin/pytest || { \
+	  echo "pa/.venv not found -- run 'make pa-install' first"; exit 2; }
+	pa/.venv/bin/pytest pa/tests -q
+
+check: check-contract check-bridge check-pa
 
 # NOT part of `check`: it clones two repositories. Run it after touching
 # anything in firmware/*.sh. It catches a failure mode that is otherwise

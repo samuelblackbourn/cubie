@@ -4,3 +4,7 @@ __pycache__/
 node_modules/
 dist/
 *.log
+
+# The PA service venv. Contains onnxruntime and a voice model; rebuilt with
+# `make pa-install`.
+pa/.venv/
