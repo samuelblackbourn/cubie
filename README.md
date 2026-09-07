@@ -37,6 +37,46 @@ It does **not** reset Cubie. He takes the new image on his next reset, and that
 is a deliberate human gate: a build is not a good enough reason to interrupt a
 robot mid-sentence.
 
+### Building automatically when `main` moves
+
+```
+sudo cp deploy/cubie-firmware-build.service deploy/cubie-firmware-build.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cubie-firmware-build.timer
+journalctl -u cubie-firmware-build -f
+```
+
+A five-minute timer runs `deploy/build-on-merge.sh`, which fetches, and builds
+only when `main` has actually moved **and** the change touched `firmware/` or
+`tools/`. Merge a firmware change and it goes out; merge a README edit and
+nothing happens — which matters more than it sounds, because the version is
+minutes-since-epoch, so an empty rebuild would look like a real release to the
+device.
+
+Pull-based, deliberately. A self-hosted GitHub Actions runner would be faster
+but costs a long-lived GitHub credential on office-server and a runner service
+that can fail on its own. Polling a git remote needs no inbound access and no
+secret, and survives office-server's address changing — which is not
+hypothetical, since that address is a DHCP lease baked into the firmware.
+
+**Prerequisite:** `sam` must run docker without sudo, i.e. be in the `docker`
+group. That is equivalent to root on this machine, so it is a deliberate trade
+rather than an oversight — the alternative is a NOPASSWD sudo rule granting the
+same thing less visibly. Check before enabling: `sudo -u sam docker info`.
+
+Four things it refuses to do, each because a timer should not race a person:
+
+- **Retry a failed commit.** A commit that fails to build is recorded and
+  skipped until `main` moves again. Otherwise one bad merge means a full
+  ESP-IDF build every five minutes, forever. The next commit is picked up
+  normally, and the diff base stays the last commit actually *built*, so a
+  firmware change inside a failed commit is not lost.
+- **Touch a dirty or non-`main` checkout**, or one carrying local commits that
+  cannot fast-forward.
+- **Run `--fresh`.** That discards a tree currently producing working firmware.
+  If the pin in `build.conf` changes, `build.sh` refuses and so does this: a
+  person runs it once, deliberately.
+- **Reset the robot.**
+
 Configuration lives in `firmware/build.conf` — the two upstream pins, the
 office's address as the robot sees it, and the toolchain image. All of it is
 overridable from the environment.

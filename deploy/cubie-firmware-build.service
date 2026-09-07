@@ -1,0 +1,49 @@
+# Builds Cubie's firmware when `main` moves. Triggered by the timer beside it.
+#
+#   sudo cp deploy/cubie-firmware-build.service deploy/cubie-firmware-build.timer \
+#           /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cubie-firmware-build.timer
+#
+# Prerequisite, and it is a real one: `sam` must be able to run docker without
+# sudo, i.e. be in the `docker` group. Membership of that group is equivalent
+# to root on this machine -- a container can mount the host filesystem -- so
+# this is a deliberate trade, not an oversight. The alternative is a NOPASSWD
+# sudo rule for docker, which grants the same thing less visibly.
+#
+# Check it before enabling the timer:
+#   sudo -u sam docker info >/dev/null && echo ok
+[Unit]
+Description=Build Cubie's firmware when main moves
+Documentation=https://github.com/samuelblackbourn/cubie
+After=network-online.target docker.service
+Wants=network-online.target
+# Not Requires=docker.service: if docker is down the build should fail loudly
+# on its own preflight and record the commit as failed, rather than have
+# systemd quietly refuse to start the unit at all.
+After=docker.service
+
+[Service]
+Type=oneshot
+User=sam
+WorkingDirectory=/home/sam/cubie
+# Remembers the last commit built and the last that failed, so a bad merge is
+# not rebuilt every few minutes forever.
+StateDirectory=cubie-build
+ExecStart=/home/sam/cubie/deploy/build-on-merge.sh
+
+# An ESP-IDF build is minutes, and a fresh clone plus submodules can be much
+# more. Well above the worst case observed, because a timeout mid-build leaves
+# a half-patched tree that the next run has to reason about.
+TimeoutStartSec=3600
+
+# Deliberately weaker than the bridge's hardening, and worth saying why: this
+# unit writes to ~/stackchan-mcp and ~/cubie-firmware and talks to the docker
+# socket. ProtectHome=read-only would break all three. The mitigation is that
+# it runs one script from a git checkout whose contents are reviewed by pull
+# request, not arbitrary input.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
