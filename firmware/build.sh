@@ -61,10 +61,33 @@ if [ "$CHECK" = 0 ]; then
   # is the point, and why docker is a hard requirement rather than a fallback.
   docker_cmd=(docker)
   if ! docker info >/dev/null 2>&1; then
+    # `sudo -n` deliberately: this script has to run unattended from a timer,
+    # and a sudo password prompt there would hang the unit until its timeout
+    # rather than fail. But -n also fails when sudo would merely have ASKED,
+    # which is a different problem with a different fix -- so say which.
     if sudo -n docker info >/dev/null 2>&1; then
       docker_cmd=(sudo docker)
+    elif ! command -v docker >/dev/null 2>&1; then
+      die "docker is not installed on this machine"
     else
-      die "cannot talk to docker (tried plain and sudo -n). Is the daemon up?"
+      reason=$(docker info 2>&1 | head -3 || true)
+      if printf '%s' "$reason" | grep -qi 'permission denied'; then
+        die "docker is running, but this user cannot reach its socket.
+
+       This is a permissions problem, not a dead daemon. Two fixes:
+
+         sudo usermod -aG docker \$USER   # then log out and back in
+         sudo -v                         # caches sudo ~15 min, then re-run
+
+       The group is the one to prefer: the build timer runs unattended and
+       cannot answer a password prompt. Note that membership of the docker
+       group is equivalent to root on this machine -- a container can mount
+       the host filesystem -- so it is a deliberate trade."
+      else
+        die "cannot reach the docker daemon:
+
+$(printf '%s' "$reason" | sed 's/^/         /')"
+      fi
     fi
   fi
 fi
