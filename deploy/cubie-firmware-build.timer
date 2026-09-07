@@ -1,0 +1,24 @@
+# Polls for movement on `main`. See cubie-firmware-build.service.
+#
+# Five minutes is a deliberate middle: the check itself is one `git fetch` of a
+# small repo, so it is nearly free, and firmware is not something anyone needs
+# within seconds of merging. The build only runs when main has actually moved
+# AND the change touched firmware/ or tools/.
+[Unit]
+Description=Check for Cubie firmware changes on main
+Documentation=https://github.com/samuelblackbourn/cubie
+
+[Timer]
+# A minute after boot rather than immediately: let the network and docker
+# settle, so the first run of the day is not a spurious failure recorded
+# against an innocent commit.
+OnBootSec=1min
+OnUnitActiveSec=5min
+# Spread the wakeup rather than firing on the exact minute, and let it coalesce
+# with other timers. Nothing here is time-critical.
+AccuracySec=1min
+RandomizedDelaySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
