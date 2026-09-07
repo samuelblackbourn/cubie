@@ -37,6 +37,8 @@ exits 1, malformed arguments exit 2.
 
 import asyncio
 import json
+import statistics
+import time
 import os
 import sys
 import urllib.error
@@ -124,36 +126,99 @@ def probe_status(url: str, headers: dict) -> int | None:
         return None
 
 
-async def call(name: str, arguments: dict) -> int:
+async def call(name: str, arguments: dict, repeat: int = 1) -> int:
     url, headers = endpoint()
 
     async with open_streams(url, headers) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            result = await session.call_tool(name, arguments)
-            for block in getattr(result, "content", None) or []:
-                print(getattr(block, "text", block))
-            return 1 if tool_failed(result) else 0
+
+            # One session, `repeat` calls. This is the number that matters for
+            # anything continuous -- head tracking off take_photo, say. A
+            # single invocation of this script pays for interpreter start and
+            # an MCP `initialize` handshake, which together dwarfed the actual
+            # round-trip when we first timed a capture: 1.15 s wall for what
+            # turned out to be a much faster device call.
+            elapsed_ms: list[float] = []
+            failed = 0
+            for index in range(repeat):
+                started = time.perf_counter()
+                result = await session.call_tool(name, arguments)
+                elapsed_ms.append((time.perf_counter() - started) * 1000)
+                if tool_failed(result):
+                    failed += 1
+                blocks = getattr(result, "content", None) or []
+                if repeat == 1:
+                    for block in blocks:
+                        print(getattr(block, "text", block))
+                else:
+                    first = blocks[0] if blocks else ""
+                    text = str(getattr(first, "text", first)).replace("\n", " ")
+                    print(f"  [{index + 1}/{repeat}] {elapsed_ms[-1]:7.1f} ms  {text[:90]}")
+
+            if repeat > 1:
+                # Median as well as mean: one slow call (a Wi-Fi retry, a servo
+                # still moving) skews a mean of ten and would misreport the
+                # rate a steady loop can actually hold.
+                print(
+                    f"\n{repeat} calls in one session -- "
+                    f"min {min(elapsed_ms):.1f} ms, "
+                    f"median {statistics.median(elapsed_ms):.1f} ms, "
+                    f"mean {statistics.fmean(elapsed_ms):.1f} ms, "
+                    f"max {max(elapsed_ms):.1f} ms"
+                )
+                print(
+                    f"sustained rate: {1000.0 / statistics.median(elapsed_ms):.2f} calls/sec"
+                    f" (median)"
+                )
+                if failed:
+                    print(f"{failed} of {repeat} calls reported an error")
+            return 1 if failed else 0
 
 
 def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
         print(
-            "usage: cubie-call.py TOOL ['{\"json\": \"arguments\"}']\n"
+            "usage: cubie-call.py [--repeat N] TOOL ['{\"json\": \"arguments\"}']\n"
             "\n"
             "  cubie-call.py get_status\n"
             "  cubie-call.py set_avatar '{\"face\": \"embarrassed\"}'\n"
             "  cubie-call.py move_head '{\"yaw\": 0, \"pitch\": 45, \"speed\": 40}'\n"
+            "  cubie-call.py --repeat 10 take_photo '{\"question\": \"x\"}'\n"
+            "\n"
+            "--repeat N makes N calls in ONE session and reports the timing\n"
+            "spread. Use it to find the rate a continuous loop can hold: a\n"
+            "single call also pays interpreter startup and an MCP handshake,\n"
+            "which a long-lived service pays once.\n"
             "\n"
             "Reads STACKCHAN_TOKEN and CUBIE_GATEWAY_MCP_URL from the environment.",
             file=sys.stderr,
         )
         return 2
 
-    name = sys.argv[1]
-    if len(sys.argv) > 2:
+    argv = sys.argv[1:]
+    repeat = 1
+    if argv[0] == "--repeat":
+        if len(argv) < 2:
+            print("ERROR: --repeat needs a count", file=sys.stderr)
+            return 2
         try:
-            arguments = json.loads(sys.argv[2])
+            repeat = int(argv[1])
+        except ValueError:
+            print(f"ERROR: --repeat wants an integer, got {argv[1]!r}", file=sys.stderr)
+            return 2
+        if repeat < 1:
+            print("ERROR: --repeat must be at least 1", file=sys.stderr)
+            return 2
+        argv = argv[2:]
+    if not argv:
+        print("ERROR: no tool named", file=sys.stderr)
+        return 2
+
+    name = argv[0]
+    if len(argv) > 1:
+        try:
+            arguments = json.loads(argv[1])
         except json.JSONDecodeError as exc:
             print(f"ERROR: arguments are not valid JSON: {exc}", file=sys.stderr)
             return 2
@@ -164,7 +229,7 @@ def main() -> int:
         arguments = {}
 
     try:
-        return asyncio.run(call(name, arguments))
+        return asyncio.run(call(name, arguments, repeat))
     except Exception as exc:
         # Deliberately not re-raising: a traceback here would be the SDK's
         # internals, and the useful part is the message. The token cannot
