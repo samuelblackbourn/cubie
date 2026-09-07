@@ -19,11 +19,47 @@ Build phases are S0–S5 there; this repo is S2 onward.
 | S1c — OTA from the office | **Done.** `build` → `publish` → reset. No cable |
 | S2 — bridge, Rung 1 (posture mirrors the office) | **Written**, `bridge/`. Not yet deployed |
 
+## Building the firmware
+
+```
+bash ~/cubie/firmware/build.sh            # patch, build, publish
+bash ~/cubie/firmware/build.sh --check    # report what would happen, change nothing
+bash ~/cubie/firmware/build.sh --fresh    # discard the working tree, start clean
+```
+
+That is the whole build. It clones upstream at a pinned commit, vendors M5's
+avatar at a pinned commit, applies the patch set **in a fixed order**, sets the
+sdkconfig entries, compiles in the pinned ESP-IDF container and publishes for
+OTA. Every step is idempotent, so a re-run on an already-patched tree prints
+"already patched" rather than failing — which is what makes it safe to automate.
+
+It does **not** reset Cubie. He takes the new image on his next reset, and that
+is a deliberate human gate: a build is not a good enough reason to interrupt a
+robot mid-sentence.
+
+Configuration lives in `firmware/build.conf` — the two upstream pins, the
+office's address as the robot sees it, and the toolchain image. All of it is
+overridable from the environment.
+
+**The order in `build.sh` is not arbitrary and must not be sorted.** Each patch
+is anchored on exact text the previous one emits; `apply-face-and-touch.sh`
+anchors on a comment `fix-touch-classify.sh` writes, so it genuinely cannot run
+before it. `fix-shy-ctor.sh` is not in the list — it repairs a tree where the
+three-argument `ShyDecorator` call already landed, and a clean run cannot
+produce that. It runs afterwards as an assertion instead, and would fail loudly
+if a future edit reintroduced the bad form.
+
 ## Firmware and deploy scripts live here
 
 `firmware/*.sh` and `tools/make_avatar.py` are versioned in this repo on purpose:
 they are how Cubie's firmware is patched, built and published, and a script that
 exists only in someone's chat history or home directory is not a deploy process.
+
+Three things used to be missing from that claim, and `build.sh` closes them: the
+`cp -r` that vendors M5's avatar was never scripted at all, nothing recorded
+which upstream commit the build was made against, and `CONFIG_LV_FONT_MONTSERRAT_16`
+and `CONFIG_OTA_URL` reached the working build from a source nobody could name —
+which meant the font fix and the OTA endpoint were one `rm -rf` from gone.
 
 On office-server, clone this repo once and then `git pull` — no copying files
 around:
