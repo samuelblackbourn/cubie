@@ -14,8 +14,24 @@ Build phases are S0–S5 there; this repo is S2 onward.
 | S0 — discovery | **Done.** Stock firmware is a no-go; see the vault log |
 | Factory firmware archived | **Done.** `office-archives/cubie/factory/`, verified |
 | Contract guard | **Done**, this repo |
-| S1 — self-hosted server + reflash | Not started |
-| S2 — bridge, Rung 1 (posture mirrors the office) | Not started |
+| S1 — self-hosted server + reflash | **Done.** Gateway on office-server, Cubie on our own build |
+| S1a — M5's live avatar ported in | **Done.** Vendored MIT, blinking, six expressions |
+| S1c — OTA from the office | **Done.** `build` → `publish` → reset. No cable |
+| S2 — bridge, Rung 1 (posture mirrors the office) | **Written**, `bridge/`. Not yet deployed |
+
+## Firmware and deploy scripts live here
+
+`firmware/*.sh` and `tools/make_avatar.py` are versioned in this repo on purpose:
+they are how Cubie's firmware is patched, built and published, and a script that
+exists only in someone's chat history or home directory is not a deploy process.
+
+On office-server, clone this repo once and then `git pull` — no copying files
+around:
+
+```
+git -C ~/cubie pull
+bash ~/cubie/firmware/<script>.sh
+```
 
 ## The shape of it
 
