@@ -53,11 +53,26 @@ new = '''        // DefaultEyes::setWeight slides a black eyelid square off the 
         }
         live_avatar_->SetMouthWeight(kMouthWeight[m]);'''
 
-if new in text:
+# Detect "already applied" by a marker that SURVIVES the rest of the chain,
+# not by the whole replacement. fix-expression-depth.sh runs after this and
+# rewrites the tail of the block written here, so `new in text` is False on an
+# already-patched tree -- and with the original anchor long gone too, this
+# aborted on every re-run. That made the whole chain non-idempotent, which is
+# what the build timer depends on.
+#
+# The corrected weights are the actual change this script makes, and nothing
+# downstream touches that line.
+APPLIED = 'kEyeWeight[3]   = {100, 55, 0}'
+
+if APPLIED in text:
     print("already fixed")
 elif old not in text:
     sys.exit("ABORTING -- anchor not found; was step 2 applied?")
 else:
     path.write_text(text.replace(old, new, 1))
+    if APPLIED not in path.read_text():
+        # The marker must appear in what we just wrote, or the next run will
+        # abort exactly as this one would have.
+        sys.exit("ABORTING -- wrote the fix but the idempotency marker is absent")
     print("stackchan.cc: eye weight direction and emotion override fixed")
 PYEOF

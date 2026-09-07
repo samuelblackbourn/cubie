@@ -68,15 +68,21 @@ new = '''        if (active_layer_ == ActiveLayer::EYES) {
             live_avatar_->SetMouthWeight(kFaceMouthWeight[current_face_index_]);
         }'''
 
-if 'kFaceMouthWeight' in text:
-    print("already patched")
-    sys.exit(0)
-if old not in text:
-    sys.exit("ABORTING -- anchor not found; apply fix-eye-weight.sh first")
-if text.count(old) != 1:
-    sys.exit(f"ABORTING -- anchor appears {text.count(old)} times")
-
-text = text.replace(old, new, 1)
+# This script edits TWO files, and their states are independent. Exiting here
+# on stackchan.cc's marker skipped the avatar_live.cc work below -- and
+# apply-live-avatar-step1.sh regenerates avatar_live.cc, so it can be
+# un-patched while stackchan.cc is patched. The result was silent: an
+# incremental build shipped EyeSizeForFace reverted to the original one-liner,
+# giving narrower `surprised` eyes than a fresh build of the same commit.
+#
+# So: record what stackchan.cc needs, and carry on to avatar_live.cc either way.
+stackchan_done = 'kFaceMouthWeight' in text
+if not stackchan_done:
+    if old not in text:
+        sys.exit("ABORTING -- anchor not found; apply fix-eye-weight.sh first")
+    if text.count(old) != 1:
+        sys.exit(f"ABORTING -- anchor appears {text.count(old)} times")
+    text = text.replace(old, new, 1)
 
 # Widen the `surprised` eye size. setSize maps -100..100 onto an 8..32 px eye,
 # so 45 was only a few pixels above the default. 100 is the full 32 px.
@@ -101,6 +107,9 @@ elif 'case 4:  return 100;' in lt:
 else:
     print("WARNING: eye-size anchor not found in avatar_live.cc; skipped")
 
-path.write_text(text)
-print("stackchan.cc: per-face mouth weight and surprised eye override added")
+if stackchan_done:
+    print("stackchan.cc: already patched")
+else:
+    path.write_text(text)
+    print("stackchan.cc: per-face mouth weight and surprised eye override added")
 PYEOF
