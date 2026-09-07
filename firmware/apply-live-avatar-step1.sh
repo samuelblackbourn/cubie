@@ -111,6 +111,17 @@ vendored code stops compiling after a submodule bump.
 EOF
 
 # ------------------------------------------------------------- mapping layer --
+# Written only when absent. Later scripts in the chain EDIT this file --
+# fix-expression-depth.sh rewrites EyeSizeForFace, apply-face-and-touch.sh
+# adds the shy decorator -- so regenerating it on a re-run silently
+# discards their work. That made the chain non-convergent: a second pass
+# produced a different tree from the first, and the build timer runs the
+# second pass every time.
+#
+# `--fresh` is how you get a clean regeneration.
+if [ -f "$BOARD/avatar_live.h" ]; then
+  echo "avatar_live.h already present, leaving it alone"
+else
 cat > "$BOARD/avatar_live.h" <<'EOF'
 /*
  * Live avatar: M5Stack's vector face, driven by this board's existing state.
@@ -173,7 +184,19 @@ private:
 
 }  // namespace stackchan_live
 EOF
+fi
 
+# Written only when absent. Later scripts in the chain EDIT this file --
+# fix-expression-depth.sh rewrites EyeSizeForFace, apply-face-and-touch.sh
+# adds the shy decorator -- so regenerating it on a re-run silently
+# discards their work. That made the chain non-convergent: a second pass
+# produced a different tree from the first, and the build timer runs the
+# second pass every time.
+#
+# `--fresh` is how you get a clean regeneration.
+if [ -f "$BOARD/avatar_live.cc" ]; then
+  echo "avatar_live.cc already present, leaving it alone"
+else
 cat > "$BOARD/avatar_live.cc" <<'EOF'
 /*
  * SPDX-License-Identifier: MIT
@@ -299,6 +322,7 @@ void LiveAvatar::Update() {
 
 }  // namespace stackchan_live
 EOF
+fi
 
 # ------------------------------------------------------------------- CMake --
 CM="$FW/main/CMakeLists.txt"

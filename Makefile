@@ -1,12 +1,13 @@
 PYTHON ?= python3
 VO_REPO ?= /workspace/virtual-office
 
-.PHONY: help check check-contract check-bridge bridge-install
+.PHONY: help check check-contract check-bridge check-idempotent bridge-install
 
 help:
 	@echo "check           the green bar (no CI by design, same as the sibling repos)"
 	@echo "check-contract  fail if /api/companion/status has drifted upstream"
 	@echo "check-bridge    typecheck + test the bridge"
+	@echo "check-idempotent  prove the firmware patch chain converges (clones, ~minutes)"
 	@echo "bridge-install  npm install in bridge/"
 	@echo ""
 	@echo "check-contract needs the upstream shape. Either:"
@@ -34,3 +35,12 @@ check-bridge:
 # The contract guard runs FIRST: if the office's payload has drifted, the
 # bridge's types are wrong and its tests are asserting the wrong shape.
 check: check-contract check-bridge
+
+# NOT part of `check`: it clones two repositories. Run it after touching
+# anything in firmware/*.sh. It catches a failure mode that is otherwise
+# silent -- a second pass over an already-patched tree producing DIFFERENT
+# sources from the first, so incremental builds ship different firmware from
+# fresh ones. That happened once and nothing errored; the build just succeeded
+# with `surprised` wearing narrower eyes.
+check-idempotent:
+	bash firmware/check-idempotent.sh

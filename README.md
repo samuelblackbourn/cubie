@@ -81,6 +81,26 @@ Configuration lives in `firmware/build.conf` — the two upstream pins, the
 office's address as the robot sees it, and the toolchain image. All of it is
 overridable from the environment.
 
+### Convergence
+
+```
+make check-idempotent
+```
+
+Not part of `make check` — it clones two repositories — but run it after
+touching anything in `firmware/*.sh`.
+
+It proves the patch chain reaches the **same sources** on a re-run, not merely
+that it exits 0. The distinction is load-bearing: `apply-live-avatar-step1.sh`
+regenerated `avatar_live.cc` on every run while `fix-expression-depth.sh` exited
+early on a `stackchan.cc` marker before reaching its `avatar_live.cc` edit. A
+second pass therefore reverted `EyeSizeForFace`, and `surprised` shipped
+narrower eyes. Nothing failed. The build succeeded. The firmware was quietly
+wrong — and only on incremental builds, which is every build the timer does.
+
+The check runs three passes plus the half-patched state a *failed* run leaves
+behind, since healing from that without `--fresh` is the timer's job.
+
 **The order in `build.sh` is not arbitrary and must not be sorted.** Each patch
 is anchored on exact text the previous one emits; `apply-face-and-touch.sh`
 anchors on a comment `fix-touch-classify.sh` writes, so it genuinely cannot run
