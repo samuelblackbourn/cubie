@@ -3,17 +3,39 @@
 Prints the real input schemas first -- set_blink and set_mouth argument names
 were guessed earlier and may have been wrong -- then enables blink and walks
 the six expressions slowly enough to watch each one.
+
+Run it with the GATEWAY'S python, which is where the `mcp` package lives:
+
+    export STACKCHAN_TOKEN=$(sudo sed -nE 's/^STACKCHAN_TOKEN=//p' \
+        /etc/stackchan-gateway.env | tr -d '\042\047')
+    ~/stackchan-gateway/bin/python ~/cubie/firmware/face-check.py
 """
-import asyncio, json, os
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+import asyncio
+import json
+import os
+import pathlib
+import sys
+
+# The SDK-compatibility shim lives in tools/. Importing it by path rather than
+# copying it here is deliberate: the two spellings of CallToolResult.isError
+# are a trap worth having exactly one answer to. See tools/mcp_compat.py.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
+from mcp_compat import ClientSession, auth_headers, open_streams  # noqa: E402
 
 FACES = ["idle", "happy", "thinking", "sad", "surprised", "embarrassed"]
 
+# Loopback: the gateway's MCP control surface is not exposed to the LAN, so
+# this runs on the gateway's own host.
+URL = os.environ.get("CUBIE_GATEWAY_MCP_URL", "http://127.0.0.1:8767/mcp")
+
+
 async def main():
-    async with streamablehttp_client(
-            "http://127.0.0.1:8767/mcp",
-            headers={"Authorization": "Bearer " + os.environ["T"]}) as (r, w, _):
+    # Was os.environ["T"], which is not a name anything else in this repo uses
+    # and would KeyError with no explanation. STACKCHAN_TOKEN is what the
+    # gateway's EnvironmentFile calls it and what every other script here reads.
+    token = os.environ.get("STACKCHAN_TOKEN", "")
+
+    async with open_streams(URL, auth_headers(token)) as (r, w):
         async with ClientSession(r, w) as s:
             await s.initialize()
             tools = {t.name: t for t in (await s.list_tools()).tools}
@@ -44,5 +66,6 @@ async def main():
                 await call("set_avatar", face=f)
                 await asyncio.sleep(4)
             await call("set_avatar", face="idle")
+
 
 asyncio.run(main())

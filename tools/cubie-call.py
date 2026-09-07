@@ -28,32 +28,14 @@ in the gateway's virtualenv:
 The token is read from the environment and never printed, including on error:
 this repo's rule is that no command it ships may echo a secret.
 
---- On supporting two SDK versions ---
+The SDK's two incompatible generations are handled in `mcp_compat`, not here.
 
-The Python MCP SDK renamed and reshaped this transport between 1.x and 2.x, and
-we do not control which one the gateway's virtualenv pins:
-
-    1.x:  streamablehttp_client(url, headers=...)   yields 3 streams
-    2.x:  streamable_http_client(url, http_client=...)  yields 2 streams
-
-Both are handled below, dispatching on which name the module exposes -- 1.30
-exposes both, and the new one there yields three streams rather than two, so
-the streams are taken by index rather than unpacked.
-
-The 2.x change that matters most is not the rename, which fails loudly at
-import, but `CallToolResult.isError` becoming `is_error`. A
-`getattr(result, "isError", False)` reads as correct, imports fine, and
-silently returns False for every failing tool call -- this script would have
-exited 0 on failure. Hence `tool_failed()` rather than a plain attribute read.
-
-Verified against mcp 1.12.4 (legacy name only), 1.30.0 (both names) and 2.2.0
-(new name only), on a local streamable-HTTP server with bearer auth: a good
-call exits 0, a failing tool exits 1, a rejected token exits 1, malformed
-arguments exit 2.
+Verified against mcp 1.12.4, 1.30.0 and 2.2.0 on a local streamable-HTTP server
+with bearer auth: a good call exits 0, a failing tool exits 1, a rejected token
+exits 1, malformed arguments exit 2.
 """
 
 import asyncio
-import contextlib
 import json
 import os
 import sys
@@ -61,11 +43,12 @@ import urllib.error
 import urllib.request
 
 try:
-    import mcp.client.streamable_http as transport_module
-    from mcp import ClientSession
-except ImportError:
+    # Sibling module: sys.path[0] is this script's directory when it is run as
+    # a path, which is how it is documented and used.
+    from mcp_compat import ClientSession, auth_headers, open_streams, tool_failed
+except ImportError as exc:
     sys.exit(
-        "ERROR: the `mcp` package is not importable.\n"
+        f"ERROR: {exc}\n"
         "Run this with the gateway's interpreter, e.g.\n"
         "  ~/stackchan-gateway/bin/python ~/cubie/tools/cubie-call.py get_status"
     )
@@ -74,31 +57,6 @@ except ImportError:
 # surface is not exposed to the LAN on purpose -- only the device-facing ports
 # are -- so this tool runs on the gateway's own host.
 DEFAULT_URL = "http://127.0.0.1:8767/mcp"
-
-
-@contextlib.asynccontextmanager
-async def open_streams(url: str, headers: dict):
-    """Yield (read, write) for whichever SDK generation is installed."""
-    if hasattr(transport_module, "streamable_http_client"):
-        # mcp >= 2: headers travel on a caller-supplied httpx client.
-        http_client = transport_module.create_mcp_http_client(headers=headers or None)
-        async with http_client:
-            async with transport_module.streamable_http_client(
-                url, http_client=http_client
-            ) as streams:
-                yield streams[0], streams[1]
-    elif hasattr(transport_module, "streamablehttp_client"):
-        # mcp 1.x: headers are a kwarg, and a third stream (the session-id
-        # getter) is yielded that we have no use for.
-        async with transport_module.streamablehttp_client(
-            url, headers=headers or None
-        ) as streams:
-            yield streams[0], streams[1]
-    else:
-        raise RuntimeError(
-            "mcp.client.streamable_http exposes neither streamable_http_client "
-            "(2.x) nor streamablehttp_client (1.x) -- unsupported SDK version"
-        )
 
 
 def describe(exc: BaseException) -> str:
@@ -129,28 +87,11 @@ def describe(exc: BaseException) -> str:
     return " <- ".join(seen) if seen else f"{type(exc).__name__}: {exc}"
 
 
-def tool_failed(result) -> bool:
-    """True when the tool itself reported failure.
-
-    Checks both spellings on purpose. `is_error` is 2.x, `isError` is 1.x, and
-    guessing one would turn a failing call into exit 0 on the other.
-    """
-    for attribute in ("is_error", "isError"):
-        value = getattr(result, attribute, None)
-        if value is not None:
-            return bool(value)
-    return False
-
-
 def endpoint() -> tuple[str, dict]:
     """The URL and auth headers, from the environment."""
     url = os.environ.get("CUBIE_GATEWAY_MCP_URL", DEFAULT_URL)
     token = os.environ.get("STACKCHAN_TOKEN", "")
-    # An empty token is not an error: the gateway disables auth entirely when
-    # neither STACKCHAN_TOKEN nor BEARER_TOKEN is set, so sending an empty
-    # `Bearer ` header would fail against a server that would have accepted no
-    # header at all.
-    return url, ({"Authorization": f"Bearer {token}"} if token else {})
+    return url, auth_headers(token)
 
 
 def probe_status(url: str, headers: dict) -> int | None:
