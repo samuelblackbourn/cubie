@@ -645,6 +645,71 @@ every 4–8 s (default), 3 every 2–4 s. The **face drifts at every level**,
 including 0 — the levels are about how much the head moves, and a still head
 with a living face is a coherent thing to want.
 
+## The brain
+
+Tap his head and he listens, thinks with the office's state in front of him,
+answers out loud, and can act on what is waiting.
+
+```
+tap  ->  listen (5 s)  ->  Claude, with the office state  ->  speak  +  act
+```
+
+Four tools: **approve** an approval, **decline** one with a reason, tell the
+office whether **someone is at the desk**, and **change his face** while he
+answers. Stroking his head is still just affection — only a *tap* starts a
+conversation, or being petted would begin one every time.
+
+### It only acts when told to
+
+This can approve real work in a real office, and there is no unapprove
+endpoint. So the guardrail is narrow and deliberate: act on an instruction
+actually present in what was said, never on an inference that acting would be
+helpful. *"Is anything waiting?"* is a question, not permission.
+
+The prompt also carries the thing that is easy to get wrong about approving:
+the office resumes an agent by spawning a **brand-new process**, so the grant
+covers that agent's whole next turn rather than the one action it stopped on.
+An assistant saying "I've allowed that one action" would be describing
+something the office does not do.
+
+### Three processes, and why
+
+| what | where | why |
+| --- | --- | --- |
+| character stack + brain | the **gateway's** venv | `mcp` lives only there |
+| the voice | `pa/.venv`, as a **subprocess** | `piper-tts` lives only there |
+| the office | HTTP | it is a different machine's service |
+
+The two virtualenvs are separate on purpose — the Makefile says why putting our
+dependencies in the gateway's would be wrong — so the brain calls the Messages
+API over `httpx` rather than adding the Anthropic SDK to a venv that must stay
+a pinned upstream release, and the voice is invoked as the same command a
+person would type.
+
+The cost is loading the 60 MB Piper model per utterance, which is unmeasured on
+this hardware. If it hurts, the fix is a long-lived voice worker, not merging
+the virtualenvs.
+
+### What is not built yet
+
+**The wake word.** Two things are missing and neither is small: the device's
+wake word is still the Chinese *"Ni hao xiao zhi"* (an English WakeNet word is
+a firmware change), and the wake path delivers audio to
+`STACKCHAN_AUDIO_HOOK_URL` — a webhook nothing serves. So the trigger today is
+tap-to-talk only.
+
+That hook path is also the better listener: it uses the device's **own VAD** and
+stops when you stop speaking, where the `listen` tool always waits its full
+window. Five seconds of window plus about 2.3 s of transcription is most of the
+latency in a turn, and most of that window is usually silence.
+
+### Configuration
+
+`ANTHROPIC_API_KEY` in `/etc/cubie-character.env`. **Without it tap-to-talk is
+off and everything else still runs** — idle motion, breathing, the face,
+head-pet — and it says so once at startup rather than failing or, worse,
+leaving a tap that silently does nothing.
+
 ## The green bar
 
 No CI, by design — same call as the sibling device repos. The bar is `make check`:

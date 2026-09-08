@@ -44,7 +44,7 @@ import random
 
 import modifiers
 import units
-from chan import Chan
+from chan import FACES, Chan
 from tracking import REST_PITCH, REST_YAW, Pose
 
 logger = logging.getLogger(__name__)
@@ -278,6 +278,24 @@ class CharacterDriver:
                 REST_YAW, REST_PITCH, units.m5_speed_to_dps(80), self._now
             )
         return face
+
+    def set_face(self, face: str) -> bool:
+        """Wear one of the board's six faces directly.
+
+        The counterpart to `set_emotion`, which maps an emotion WORD onto a
+        face. The brain picks from the six by name, so it wants this one --
+        routing it through the emotion table would mean inventing an emotion
+        word for every face and mapping it straight back.
+
+        Returns False for a name the board does not have, rather than passing
+        it to `set_avatar`, which rejects an unknown face -- and a rejected
+        call at that end is a silent no-op.
+        """
+        if face not in FACES:
+            logger.warning("unknown face %r ignored", face)
+            return False
+        self.chan.face.face = face
+        return True
 
     # ------------------------------------------------------------ messages --
     def on_message(self, name: str, content: str) -> None:
