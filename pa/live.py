@@ -49,6 +49,7 @@ import conversation as conversation_mod  # noqa: E402
 import driver as driver_mod  # noqa: E402
 import office as office_mod  # noqa: E402
 from chan import Chan  # noqa: E402
+from tracking import Pose  # noqa: E402
 
 logger = logging.getLogger("cubie.live")
 
@@ -331,7 +332,7 @@ async def listen_once(session, duration_ms: int) -> str | None:
     return None
 
 
-async def read_head_pose(session) -> "Pose | None":
+async def read_head_pose(session) -> Pose | None:
     """Where the head actually is, or None if the device could not say.
 
     None is a documented outcome, not a defensive maybe: the firmware's own
@@ -341,8 +342,6 @@ async def read_head_pose(session) -> "Pose | None":
     invent a pose -- `wake()` says so in the log and falls back to assuming
     rest, which is what the code did before any of this existed.
     """
-    from tracking import Pose
-
     try:
         result = await session.call_tool("get_head_angles", {})
     except Exception as exc:  # noqa: BLE001 - a failed read is not fatal
@@ -382,7 +381,7 @@ def _log_turn_failure(task: "asyncio.Task") -> None:
         logger.error("conversation turn failed: %r", exc)
 
 
-async def _read_office(client) -> Any:
+async def _read_office(client) -> "office_mod.OfficeState | None":
     """The office's state, or None -- the reason goes to the log, not the model.
 
     Unreachable, 401 and malformed all mean the same thing to an assistant on a
