@@ -123,3 +123,40 @@ def test_modulation_stays_intelligible_in_the_presets():
 def test_each_character_introduces_itself_by_name():
     for character in CHARACTERS.values():
         assert character.name in character.spoken_intro()
+
+
+def test_the_preset_order_covers_every_character():
+    """Two hand-written lists of these names existed -- one in describe_all,
+    one in audition's --characters -- and adding `retro` updated only the
+    first, so the audition tool silently skipped the preset in use. One list,
+    asserted against the presets themselves."""
+    from character import CHARACTERS, ORDER
+
+    assert set(ORDER) == set(CHARACTERS)
+    assert len(ORDER) == len(CHARACTERS), "no duplicates"
+
+
+def test_the_carrier_flag_defaults_to_none_so_a_sweep_can_inherit_one():
+    """With a value, "did they ask for 60 or not ask at all?" is unanswerable
+    and the `or 60.0` fallback could never fire -- the same trap this file's
+    neighbours document for every other flag."""
+    import ast
+    import audition
+
+    tree = ast.parse(Path(audition.__file__).read_text())
+    defaults = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "attr", None) == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            for keyword in node.keywords:
+                if keyword.arg == "default":
+                    defaults[node.args[0].value] = ast.unparse(keyword.value)
+
+    assert defaults.get("--robot-hz") == "None"
+    # And the depth flag keeps its own default of 0.0, which is meaningful
+    # here: no modulation is the baseline an audition compares against.
+    assert defaults.get("--robot") == "0.0"

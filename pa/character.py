@@ -164,6 +164,16 @@ CHARACTERS: dict[str, Character] = {
 }
 
 
+#: Presentation order, and the ONE list of preset names.
+#:
+#: There were two hand-written lists of these -- one in `describe_all`, one in
+#: audition.py's `--characters` -- and adding `retro` updated only the first.
+#: So the audition tool silently skipped the preset actually in use. A single
+#: tuple, asserted against CHARACTERS by a test, is the fix; a dict is ordered
+#: in Python but the order it happens to have is not a decision anyone made.
+ORDER = ("plain", "cute", "chirpy", "retro", "machine", "gruff")
+
+
 def resolve(name: str) -> Character:
     """Look up a character by name, case-insensitively."""
     key = name.strip().lower()
@@ -175,7 +185,7 @@ def resolve(name: str) -> Character:
 
 def describe_all() -> str:
     lines = []
-    for key in ("plain", "cute", "chirpy", "retro", "machine", "gruff"):
+    for key in ORDER:
         c = CHARACTERS[key]
         voice = c.voice or "(default)"
         lines.append(
