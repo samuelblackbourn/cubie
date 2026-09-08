@@ -40,6 +40,8 @@ from typing import Iterable, Iterator, Protocol
 
 import httpx
 
+from audio import DEVICE_RATE, Resampler, bit_crush, ring_modulate
+
 logger = logging.getLogger(__name__)
 
 #: The gateway's capture server. Loopback because the PA service runs on the
@@ -132,6 +134,9 @@ def speak(
     url: str | None = None,
     token: str | None = None,
     timeout: float = 120.0,
+    robot: float = 0.0,
+    robot_hz: float = 60.0,
+    crush_bits: int = 16,
 ) -> dict:
     """Synthesise `text` and stream it to the device speaker.
 
@@ -147,10 +152,21 @@ def speak(
     url = url or os.environ.get("CUBIE_PCM_URL", DEFAULT_PCM_URL)
     token = token if token is not None else os.environ.get("STACKCHAN_TOKEN", "")
 
+    # Read the voice's rate BEFORE opening the connection. It forces the model
+    # to load, so a missing voice file fails here with a message naming the
+    # model -- rather than inside the request generator, where the first thing
+    # to go wrong is a connection error and the real cause never surfaces.
+    # The header used to do this incidentally; now that it sends DEVICE_RATE,
+    # the eager read has to be deliberate.
+    source_rate = synthesizer.sample_rate
+
     headers = {
-        # Sent once, before any audio: the rate is a property of the voice,
-        # not of a chunk, so it is known up front and cannot change mid-stream.
-        "X-Sample-Rate": str(synthesizer.sample_rate),
+        # Always the device rate, because we resample before sending. The
+        # gateway would accept any rate, but it resamples each 8192-byte body
+        # chunk INDEPENDENTLY -- restarting interpolation ~25 times in a
+        # 4.6 s sentence, which is audible as a voice that breaks up. Sending
+        # 16 kHz makes its resample step a documented no-op.
+        "X-Sample-Rate": str(DEVICE_RATE),
         "X-Channels": "1",
         "Content-Type": "application/octet-stream",
     }
@@ -158,15 +174,33 @@ def speak(
         headers["Authorization"] = f"Bearer {token}"
 
     def body() -> Iterable[bytes]:
+        # One resampler and one carrier phase for the whole utterance. Both
+        # carry state across chunks; that continuity is the entire reason the
+        # audio does not click at every boundary.
+        resampler = Resampler(source_rate, DEVICE_RATE)
+        phase = 0.0
         total = 0
-        for chunk in synthesizer.stream(text):
-            total += len(chunk)
-            yield chunk
+        for raw in synthesizer.stream(text):
+            chunk = resampler.feed(raw)
+            if robot > 0.0:
+                chunk, phase = ring_modulate(
+                    chunk, DEVICE_RATE, frequency=robot_hz, depth=robot, phase=phase
+                )
+            if crush_bits < 16:
+                chunk = bit_crush(chunk, bits=crush_bits)
+            if chunk:
+                total += len(chunk)
+                yield chunk
+        tail = resampler.flush()
+        if tail:
+            total += len(tail)
+            yield tail
         logger.info(
-            "streamed %d bytes of PCM (%.1f s at %d Hz)",
+            "streamed %d bytes of PCM (%.1f s at %d Hz%s)",
             total,
-            total / 2 / max(synthesizer.sample_rate, 1),
-            synthesizer.sample_rate,
+            total / 2 / DEVICE_RATE,
+            DEVICE_RATE,
+            f", robot depth {robot}" if robot > 0.0 else "",
         )
 
     try:
@@ -225,13 +259,45 @@ def _main(argv: list[str]) -> int:
         default=None,
         help=f"gateway PCM endpoint (default {DEFAULT_PCM_URL})",
     )
+    parser.add_argument(
+        "--robot",
+        type=float,
+        default=0.0,
+        metavar="DEPTH",
+        help=(
+            "ring-modulation depth, 0 to 1. 0 is the plain voice; ~0.6 reads "
+            "as a machine while staying easy to understand; 1 is heavy and "
+            "starts to cost intelligibility"
+        ),
+    )
+    parser.add_argument(
+        "--robot-hz",
+        type=float,
+        default=60.0,
+        metavar="HZ",
+        help="carrier frequency: lower is a deeper growl, higher is buzzier",
+    )
+    parser.add_argument(
+        "--crush",
+        type=int,
+        default=16,
+        metavar="BITS",
+        help="quantise to this many bits for a cheap-hardware edge (16 = off)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     voice = PiperSynthesizer(voice_name=args.voice, data_dir=args.data_dir)
 
     try:
-        result = speak(" ".join(args.text), voice, url=args.url)
+        result = speak(
+            " ".join(args.text),
+            voice,
+            url=args.url,
+            robot=args.robot,
+            robot_hz=args.robot_hz,
+            crush_bits=args.crush,
+        )
     except FileNotFoundError as exc:
         # The model is a separate ~60 MB download, not a pip dependency, so
         # this is the most likely first-run failure. The message carries the
