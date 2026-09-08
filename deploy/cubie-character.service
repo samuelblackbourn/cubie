@@ -9,11 +9,38 @@
 # exactly why the head was not moving -- so this unit is the missing half.
 #
 # Reads /etc/cubie-character.env for STACKCHAN_TOKEN. Mode 0600, root-owned,
-# like the gateway's and the bridge's. It may be a symlink to
-# /etc/cubie-bridge.env, which already carries that token.
+# like the gateway's.
+#
+# Create it by DERIVING the token from the gateway's own env file, so the value
+# is never printed to a terminal (this repo's rule: no command it ships may
+# echo a secret, and terminals get pasted into chat):
+#
+#   sudo sh -c 'umask 077; printf "STACKCHAN_TOKEN=%s\n" \
+#     "$(sed -nE "s/^STACKCHAN_TOKEN=//p" /etc/stackchan-gateway.env | tr -d "\042\047")" \
+#     > /etc/cubie-character.env'
+#   sudo awk -F= '/^STACKCHAN_TOKEN=/{print "token length:", length($2)}' \
+#     /etc/cubie-character.env      # expect 64
+#
+# Do NOT symlink this to /etc/cubie-bridge.env. That file does not exist --
+# the bridge is written but has never been deployed -- and systemd answers a
+# dangling EnvironmentFile with "Failed to load environment files" reported as
+# result 'resources', which reads like a resource problem and is a missing
+# file. That instruction was in this comment once and cost a debugging round.
+#
+# The cost of a dedicated file is that the token now lives in two places, so
+# rotating the gateway's means rewriting this one too -- rerun the command
+# above and restart this unit.
 [Unit]
 Description=Cubie character stack (M5 modifiers: idle, breath, gaze, touch)
 Documentation=https://github.com/samuelblackbourn/cubie
+# Give up rather than loop forever on a configuration error. Restart=always is
+# meant to ride out the gateway restarting and the device dropping off Wi-Fi,
+# but with RestartSec=5 it spreads restarts past systemd's default 10-second
+# window -- so a bad EnvironmentFile retried 33 times before anyone looked,
+# filling the journal and never surfacing as a failed unit. Five tries in five
+# minutes distinguishes "the network blipped" from "this will never start".
+StartLimitIntervalSec=300
+StartLimitBurst=5
 # The gateway owns the device connection and the loopback MCP surface this
 # dials; without it there is nothing to drive.
 After=network-online.target stackchan-gateway.service

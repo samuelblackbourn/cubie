@@ -501,9 +501,22 @@ LAN only. The design note rules out a tunnel path for this device entirely.
 
 ```
 sudo cp deploy/cubie-character.service /etc/systemd/system/
-sudo ln -sf /etc/cubie-bridge.env /etc/cubie-character.env   # same token
+sudo sh -c 'umask 077; printf "STACKCHAN_TOKEN=%s\n" \
+  "$(sed -nE "s/^STACKCHAN_TOKEN=//p" /etc/stackchan-gateway.env | tr -d "\042\047")" \
+  > /etc/cubie-character.env'
+sudo awk -F= '/^STACKCHAN_TOKEN=/{print "token length:", length($2)}' \
+  /etc/cubie-character.env      # expect 64
 sudo systemctl daemon-reload && sudo systemctl enable --now cubie-character
 ```
+
+The token is **derived, never pasted**: that `sed` reads the gateway's own env
+file and the `awk` reports a length rather than a value, so no command here
+prints a secret into a terminal that later gets pasted somewhere.
+
+Do **not** symlink `/etc/cubie-character.env` to `/etc/cubie-bridge.env`. That
+file does not exist — the bridge is written but has never been deployed — and
+systemd reports a dangling `EnvironmentFile` as result `'resources'`, which
+reads like a resource problem and is a missing file.
 
 Then, for touch to reach him at all — it is off by default:
 
