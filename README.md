@@ -209,6 +209,28 @@ interpolator state across chunks, and the gateway's step becomes a no-op.
 `--robot` ring-modulates; `--crush` quantises. Both carry their state across
 chunks for the same reason the resampler does.
 
+## Language
+
+The firmware defaults to **`LANGUAGE_ZH_CN`**, so every on-screen string and
+every locale sound asset — `welcome.ogg`, `activation.ogg`, `wificonfig.ogg`,
+the spoken digits used to read an activation code aloud — is Chinese. That is
+why the boot screen is unreadable and the startup voice unintelligible.
+
+`FIRMWARE_LANGUAGE` in `build.conf` selects it, defaulting to
+`LANGUAGE_EN_US`. It names a Kconfig `choice` option exactly — see
+`firmware/main/Kconfig.projbuild` for the list.
+
+Because it is a *choice*, the options are mutually exclusive but are different
+Kconfig keys, so the config patcher removes any other `CONFIG_LANGUAGE_*`
+before adding the wanted one. Without that, switching language leaves two
+selected and the build picks one unpredictably.
+
+**Not the same thing as removing the boot screen.** Activation is not the
+culprit — our OTA manifest carries no activation code, so that loop exits
+immediately — and `welcome.ogg` is referenced nowhere in the code. What the
+boot screen actually is, and what actually speaks, still wants a serial capture
+to identify rather than a guess.
+
 ## Idle behaviour
 
 Blinking is already in the firmware — `set_blink(enabled: true)`, every 3–6
