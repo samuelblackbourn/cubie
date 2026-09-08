@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 from urllib.request import urlopen
 
+from character import CHARACTERS, Character, resolve
 from speech import PiperSynthesizer, SpeechError, speak
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,9 @@ def audition(
     robot: float,
     robot_hz: float,
     crush: int,
+    pitch: float = 1.0,
+    variation: float | None = None,
+    intro: str | None = None,
 ) -> bool:
     """Download if needed, then speak. True if it was heard."""
     from piper import download_voices
@@ -114,8 +118,10 @@ def audition(
             print(f"  SKIP {voice}: {type(exc).__name__}: {exc}")
             return False
 
-    synth = PiperSynthesizer(voice_name=voice, data_dir=str(data_dir))
-    line = text or spoken_name(voice)
+    synth = PiperSynthesizer(
+        voice_name=voice, data_dir=str(data_dir), pitch=pitch, variation=variation
+    )
+    line = text or intro or spoken_name(voice)
     try:
         rate = synth.sample_rate
     except Exception as exc:  # noqa: BLE001
@@ -150,6 +156,11 @@ def main(argv: list[str]) -> int:
         "--robot-sweep",
         action="store_true",
         help="for each voice, speak it plain then at robot depth 0.4, 0.7 and 1.0",
+    )
+    parser.add_argument(
+        "--characters",
+        action="store_true",
+        help="for each voice, speak every named character in turn",
     )
     parser.add_argument(
         "--limit", type=int, default=8,
@@ -193,23 +204,46 @@ def main(argv: list[str]) -> int:
 
     data_dir = Path(args.data_dir).expanduser()
     heard = 0
+    attempted = 0
     for voice in shown:
-        depths = [0.0, 0.4, 0.7, 1.0] if args.robot_sweep else [args.robot]
-        for depth in depths:
-            if args.robot_sweep:
-                print(f"  -- robot depth {depth}")
+        if args.characters:
+            settings = [resolve(k) for k in ("plain", "cute", "chirpy", "machine",
+                                             "gruff")]
+        elif args.robot_sweep:
+            settings = [
+                Character(
+                    name=f"robot {d}", description="", robot=d,
+                    robot_hz=args.robot_hz or 60.0,
+                )
+                for d in (0.0, 0.4, 0.7, 1.0)
+            ]
+        else:
+            settings = [
+                Character(
+                    name="chosen", description="",
+                    robot=args.robot, robot_hz=args.robot_hz or 60.0,
+                    crush=args.crush,
+                )
+            ]
+
+        for setting in settings:
+            print(f"  -- {setting.name}")
+            attempted += 1
             if audition(
                 voice,
                 data_dir=data_dir,
                 text=args.say,
-                robot=depth,
-                robot_hz=args.robot_hz,
-                crush=args.crush,
+                robot=setting.robot,
+                robot_hz=setting.robot_hz,
+                crush=setting.crush,
+                pitch=setting.pitch,
+                variation=setting.variation,
+                intro=setting.spoken_intro() if args.characters else None,
             ):
                 heard += 1
             time.sleep(args.pause)
 
-    print(f"\nheard {heard} of {len(shown) * (4 if args.robot_sweep else 1)}")
+    print(f"\nheard {heard} of {attempted}")
     return 0 if heard else 1
 
 

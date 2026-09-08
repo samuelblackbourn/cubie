@@ -41,6 +41,7 @@ from typing import Iterable, Iterator, Protocol
 import httpx
 
 from audio import DEVICE_RATE, Resampler, bit_crush, ring_modulate
+from character import CHARACTERS, describe_all, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,33 @@ class PiperSynthesizer:
     Model load is the expensive part (hundreds of milliseconds and tens of
     megabytes); synthesis afterwards is fast. A long-lived PA service pays it
     once at startup, which is why this is a held object rather than a function.
+
+    --- How `pitch` works, because it looks like a lie ---
+
+    Piper has no pitch control. It has `length_scale` (speed) and nothing else
+    that moves the fundamental. But pitch and speed are the same knob when you
+    resample: play audio back faster and it rises in pitch and shortens.
+
+    So `pitch=1.35` does two things that cancel on duration and compound on
+    pitch: it synthesises 35% SLOWER via length_scale, then reports a
+    `sample_rate` 35% HIGHER than the model actually produces. The existing
+    resampler in `speak()` then compresses the audio back to its original
+    length, taking the pitch up with it.
+
+    The reported rate is deliberately not the true one. That is the whole
+    mechanism, and it means pitch costs no new signal processing at all --
+    just a number. Anything reading `sample_rate` to interpret these bytes
+    is correct to use the reported value, because that IS the rate at which
+    this audio should be played.
     """
 
     voice_name: str = DEFAULT_VOICE
     data_dir: str = os.path.expanduser("~/.local/share/piper-voices")
+    #: >1 raises pitch, <1 lowers it. 1.0 leaves the voice alone.
+    pitch: float = 1.0
+    #: Lower is flatter and more machine-like; Piper's own default is ~0.8.
+    #: None leaves the model's default untouched.
+    variation: float | None = None
     _voice: object | None = None
 
     def _load(self):
@@ -101,11 +125,41 @@ class PiperSynthesizer:
         return self._voice
 
     @property
-    def sample_rate(self) -> int:
+    def native_rate(self) -> int:
+        """What the model actually produces, before the pitch trick."""
         return int(self._load().config.sample_rate)
 
+    @property
+    def sample_rate(self) -> int:
+        """The rate this audio should be PLAYED at -- native times pitch.
+
+        See the class docstring: raising this above the true rate is how the
+        pitch shift happens.
+        """
+        if self.pitch <= 0:
+            raise ValueError("pitch must be positive")
+        return int(round(self.native_rate * self.pitch))
+
+    def _config(self):
+        """Synthesis options, or None to take the model's defaults."""
+        if self.pitch == 1.0 and self.variation is None:
+            return None
+        from piper import SynthesisConfig
+
+        options: dict = {}
+        if self.pitch != 1.0:
+            # Slower by the same factor the resample will speed it up by, so
+            # the utterance keeps its original duration.
+            options["length_scale"] = self.pitch
+        if self.variation is not None:
+            options["noise_w_scale"] = self.variation
+        return SynthesisConfig(**options)
+
     def stream(self, text: str) -> Iterator[bytes]:
-        for chunk in self._load().synthesize(text):
+        config = self._config()
+        synthesize = self._load().synthesize
+        chunks = synthesize(text) if config is None else synthesize(text, config)
+        for chunk in chunks:
             # Piper's AudioChunk exposes the raw bytes under a couple of names
             # across versions. Prefer the explicit int16 accessor and fall back
             # rather than pinning to one spelling -- the same lesson as the MCP
@@ -243,7 +297,9 @@ def _main(argv: list[str]) -> int:
         prog="speech.py",
         description="Speak text on Cubie, synthesised locally with Piper.",
     )
-    parser.add_argument("text", nargs="+", help="what to say")
+    # nargs="*" not "+": --characters is an informational mode that must work
+    # without text. The requirement is enforced below, after that early exit.
+    parser.add_argument("text", nargs="*", help="what to say")
     parser.add_argument(
         "--voice",
         default=DEFAULT_VOICE,
@@ -260,9 +316,22 @@ def _main(argv: list[str]) -> int:
         help=f"gateway PCM endpoint (default {DEFAULT_PCM_URL})",
     )
     parser.add_argument(
+        "--character",
+        default="plain",
+        choices=sorted(CHARACTERS),
+        help="named voice setting; individual flags below override it",
+    )
+    parser.add_argument(
+        "--characters", action="store_true", help="describe the characters and exit"
+    )
+    parser.add_argument("--pitch", type=float, default=None,
+                        help=">1 raises, <1 lowers. Overrides --character")
+    parser.add_argument("--variation", type=float, default=None,
+                        help="lower is flatter and more machine-like")
+    parser.add_argument(
         "--robot",
         type=float,
-        default=0.0,
+        default=None,
         metavar="DEPTH",
         help=(
             "ring-modulation depth, 0 to 1. 0 is the plain voice; ~0.6 reads "
@@ -273,30 +342,55 @@ def _main(argv: list[str]) -> int:
     parser.add_argument(
         "--robot-hz",
         type=float,
-        default=60.0,
+        default=None,
         metavar="HZ",
         help="carrier frequency: lower is a deeper growl, higher is buzzier",
     )
     parser.add_argument(
         "--crush",
         type=int,
-        default=16,
+        default=None,
         metavar="BITS",
         help="quantise to this many bits for a cheap-hardware edge (16 = off)",
     )
     args = parser.parse_args(argv)
 
+    if args.characters:
+        print(describe_all())
+        return 0
+
+    if not args.text:
+        parser.error("nothing to say -- pass some text")
+
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    voice = PiperSynthesizer(voice_name=args.voice, data_dir=args.data_dir)
+
+    # The character supplies defaults; an explicit flag always wins. `None`
+    # rather than a value as each flag's default is what makes that possible
+    # -- otherwise "did they pass --robot 0, or is 0 just the default?" is
+    # unanswerable, and passing 0 to silence a character's modulation would
+    # silently do nothing.
+    preset = resolve(args.character)
+    pitch = args.pitch if args.pitch is not None else preset.pitch
+    variation = args.variation if args.variation is not None else preset.variation
+    robot = args.robot if args.robot is not None else preset.robot
+    robot_hz = args.robot_hz if args.robot_hz is not None else preset.robot_hz
+    crush = args.crush if args.crush is not None else preset.crush
+
+    voice = PiperSynthesizer(
+        voice_name=args.voice,
+        data_dir=args.data_dir,
+        pitch=pitch,
+        variation=variation,
+    )
 
     try:
         result = speak(
             " ".join(args.text),
             voice,
             url=args.url,
-            robot=args.robot,
-            robot_hz=args.robot_hz,
-            crush_bits=args.crush,
+            robot=robot,
+            robot_hz=robot_hz,
+            crush_bits=crush,
         )
     except FileNotFoundError as exc:
         # The model is a separate ~60 MB download, not a pip dependency, so

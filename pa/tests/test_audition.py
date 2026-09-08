@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from audition import select, spoken_name  # noqa: E402
+from character import CHARACTERS, resolve  # noqa: E402
 
 CATALOGUE = [
     "de_DE-thorsten-medium",
@@ -75,3 +76,50 @@ def test_spoken_name_is_worth_hearing_aloud():
 
 def test_spoken_name_survives_an_unexpected_shape():
     assert spoken_name("weird") == "This is weird."
+
+
+# --- named characters ---------------------------------------------------------
+
+def test_every_character_is_resolvable_and_named_consistently():
+    for key, character in CHARACTERS.items():
+        assert resolve(key) is character
+        assert character.name == key, "the key and the spoken name must agree"
+
+
+def test_resolve_is_case_and_space_insensitive():
+    assert resolve("  CUTE ").name == "cute"
+
+
+def test_unknown_character_lists_the_known_ones():
+    import pytest as _pytest
+
+    with _pytest.raises(KeyError) as exc:
+        resolve("walle")
+    assert "cute" in str(exc.value)
+
+
+def test_plain_really_is_plain():
+    """It is the baseline everything else is judged against, so it must
+    apply no processing at all."""
+    plain = resolve("plain")
+    assert plain.pitch == 1.0
+    assert plain.robot == 0.0
+    assert plain.crush == 16
+    assert plain.variation is None
+
+
+def test_pitches_are_sane_and_span_both_directions():
+    pitches = {k: c.pitch for k, c in CHARACTERS.items()}
+    assert all(0.5 <= p <= 2.0 for p in pitches.values())
+    assert pitches["gruff"] < 1.0 < pitches["cute"]
+
+
+def test_modulation_stays_intelligible_in_the_presets():
+    """Depth near 1 is hard to follow, and this reads out approvals.
+    Heavy settings are available explicitly, not by choosing a character."""
+    assert all(c.robot <= 0.6 for c in CHARACTERS.values())
+
+
+def test_each_character_introduces_itself_by_name():
+    for character in CHARACTERS.values():
+        assert character.name in character.spoken_intro()
