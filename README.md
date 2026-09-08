@@ -163,6 +163,27 @@ pa/.venv/bin/python pa/speech.py "Hello Sam."
 pa/.venv/bin/python pa/speech.py --robot 0.7 "Approval waiting."
 ```
 
+**Characters** bundle pitch, delivery and modulation, because those four
+numbers interact in ways nobody predicts from the values:
+
+```
+pa/.venv/bin/python pa/speech.py --characters              # what they are
+pa/.venv/bin/python pa/speech.py --character cute "Hello Sam."
+pa/.venv/bin/python pa/audition.py --only en_GB-alan-low --characters
+```
+
+Pitch is the knob that matters. A voice 30–40% up sounds *small*, which is
+most of what makes a robot endearing rather than menacing — far more than
+modulation, which adds a machine edge but costs intelligibility as it rises.
+Since this thing reads out approvals, the presets keep modulation modest and
+leave heavy settings to anyone asking for them explicitly.
+
+**Piper has no pitch control**, so it comes from the resampler: synthesise
+slower via `length_scale`, then declare a proportionally higher sample rate.
+The duration cancels out and the pitch multiplies. `PiperSynthesizer.pitch`
+reports `sample_rate` above the model's true rate on purpose, and that is the
+entire mechanism — pitch shifting costs no signal processing, just a number.
+
 **Pick a voice by hearing it, not by reading names:**
 
 ```

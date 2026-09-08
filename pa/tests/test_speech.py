@@ -198,3 +198,17 @@ def test_cli_requires_text():
 
     with pytest.raises(SystemExit):
         _main([])
+
+
+def test_cli_lists_characters_without_needing_text():
+    """--characters is informational; requiring text to read a list is rude."""
+    from speech import _main
+
+    assert _main(["--characters"]) == 0
+
+
+def test_cli_without_text_says_so():
+    from speech import _main
+
+    with pytest.raises(SystemExit):
+        _main(["--character", "cute"])
