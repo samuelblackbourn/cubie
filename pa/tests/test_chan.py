@@ -230,3 +230,69 @@ def test_every_tool_the_effector_can_send_is_declared_as_required_or_optional():
         "set_speech", "set_blink", "set_all_leds", "move_head",
     }
     assert sendable == declared
+
+
+def test_the_stack_rides_out_a_gateway_restart_instead_of_exiting():
+    """The gateway restarts for its own upgrades and every time this fleet's
+    tools are re-patched into it, and it owns the device connection. Exiting on
+    the first refused connection would make a routine restart look like a
+    crash -- and with a start limit on the unit, a slow one could leave the
+    character stack dead."""
+    import asyncio
+    import pathlib
+
+    import live
+
+    attempts = []
+
+    async def refuse_then_succeed(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise ConnectionRefusedError("gateway is restarting")
+        return 0
+
+    original_run_once = live.run_once
+    original_backoff = live.CONNECT_BACKOFF_S
+    try:
+        live.run_once = refuse_then_succeed
+        live.CONNECT_BACKOFF_S = (0.0,)
+        rc = asyncio.run(live.run("http://127.0.0.1:8767/mcp", pathlib.Path("/nope"), 2))
+    finally:
+        live.run_once = original_run_once
+        live.CONNECT_BACKOFF_S = original_backoff
+
+    assert rc == 0
+    assert len(attempts) == 3
+
+
+def test_a_missing_required_tool_is_not_retried():
+    """Retrying cannot fix a configuration error, and spinning on one hides it.
+    check_tools raises SystemExit, which must propagate."""
+    import asyncio
+    import pathlib
+
+    import live
+
+    async def config_error(*args, **kwargs):
+        raise SystemExit("gateway is missing move_head")
+
+    original = live.run_once
+    try:
+        live.run_once = config_error
+        try:
+            asyncio.run(live.run("x", pathlib.Path("/nope"), 2))
+        except SystemExit as exc:
+            assert "move_head" in str(exc)
+        else:
+            raise AssertionError("a config error should not be retried")
+    finally:
+        live.run_once = original
+
+
+def test_giving_up_is_bounded_so_a_broken_config_still_surfaces():
+    """Infinite retry would turn a permanently broken setup into a process that
+    looks healthy forever."""
+    import live
+
+    assert live.CONNECT_TIMEOUT_S <= 600.0
+    assert live.CONNECT_BACKOFF_S[-1] >= 5.0

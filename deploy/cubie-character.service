@@ -33,12 +33,16 @@
 [Unit]
 Description=Cubie character stack (M5 modifiers: idle, breath, gaze, touch)
 Documentation=https://github.com/samuelblackbourn/cubie
-# Give up rather than loop forever on a configuration error. Restart=always is
-# meant to ride out the gateway restarting and the device dropping off Wi-Fi,
-# but with RestartSec=5 it spreads restarts past systemd's default 10-second
-# window -- so a bad EnvironmentFile retried 33 times before anyone looked,
-# filling the journal and never surfacing as a failed unit. Five tries in five
-# minutes distinguishes "the network blipped" from "this will never start".
+# Give up rather than loop forever on a configuration error: a bad
+# EnvironmentFile retried 33 times before anyone looked, filling the journal
+# and never surfacing as a failed unit.
+#
+# This is safe to make strict only because the PROCESS rides out a gateway
+# restart itself (pa/live.py retries the connection for up to five minutes with
+# backoff) rather than exiting and leaning on Restart= to reconnect. Without
+# that, five tries at five-second intervals would give a routine
+# `systemctl restart stackchan-gateway` about 25 seconds to come back before
+# systemd gave up on the character stack for good.
 StartLimitIntervalSec=300
 StartLimitBurst=5
 # The gateway owns the device connection and the loopback MCP surface this

@@ -273,7 +273,22 @@ async def tail_events(path: Path, on_event) -> None:
             on_event(event)
 
 
-async def run(mcp_url: str, event_log: Path, idle_level: int) -> int:
+#: How long to keep trying to reach the gateway before giving up.
+#:
+#: The gateway restarts -- for its own upgrades, and every time this fleet's
+#: tools are re-patched into it -- and it owns the device connection, so this
+#: process cannot do anything while it is down. Exiting immediately would make
+#: a routine `systemctl restart stackchan-gateway` look like a crash, and with
+#: a start limit on the unit a slow restart could leave the character stack
+#: dead until someone noticed.
+#:
+#: Bounded rather than infinite so a genuinely broken configuration still
+#: surfaces as a failed unit rather than a process retrying forever.
+CONNECT_TIMEOUT_S = 300.0
+CONNECT_BACKOFF_S = (1.0, 2.0, 5.0, 10.0, 15.0)
+
+
+async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
     from mcp_compat import ClientSession, auth_headers, open_streams
 
     token = os.environ.get("STACKCHAN_TOKEN") or os.environ.get("BEARER_TOKEN")
@@ -310,6 +325,38 @@ async def run(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
     return 0
+
+
+async def run(mcp_url: str, event_log: Path, idle_level: int) -> int:
+    """Keep the stack up across a gateway restart.
+
+    Only CONNECTION failures are retried. A missing required tool raises
+    SystemExit out of `check_tools`, and that is a configuration error which
+    retrying cannot fix -- so it propagates rather than spinning.
+    """
+    started = time.monotonic()
+    attempt = 0
+    while True:
+        try:
+            return await run_once(mcp_url, event_log, idle_level)
+        except SystemExit:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - anything unreachable is a retry
+            elapsed = time.monotonic() - started
+            if elapsed > CONNECT_TIMEOUT_S:
+                logger.error(
+                    "could not reach the gateway at %s for %.0fs, giving up: %s",
+                    mcp_url, elapsed, exc,
+                )
+                return 1
+            delay = CONNECT_BACKOFF_S[min(attempt, len(CONNECT_BACKOFF_S) - 1)]
+            attempt += 1
+            logger.warning(
+                "gateway unreachable (%s); retrying in %.0fs", exc, delay
+            )
+            await asyncio.sleep(delay)
 
 
 def main() -> int:
