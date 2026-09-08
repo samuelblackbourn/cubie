@@ -45,7 +45,7 @@ import random
 import modifiers
 import units
 from chan import Chan
-from tracking import REST_PITCH, REST_YAW
+from tracking import REST_PITCH, REST_YAW, Pose
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,48 @@ class CharacterDriver:
         self.idle_motion: modifiers.IdleMotionModifier | None = None
         self.idle_expression: modifiers.IdleExpressionModifier | None = None
         self.speaking: modifiers.SpeakingModifier | None = None
+
+    # --------------------------------------------------------------- wake --
+    #: How fast he returns to rest at startup. Slower than every idle speed
+    #: (25-240 dps) on purpose: this is the one movement a person watches from
+    #: cold, and a robot that snaps to attention on power-up reads as a fault
+    #: where one that settles reads as waking.
+    WAKE_SPEED_DPS = 40
+
+    def wake(self, now: float, actual: Pose | None = None) -> None:
+        """Sync to the head's real pose, then settle to rest.
+
+        Two steps, and the order is the point.
+
+        M5's boot does the first half -- `Servo::init()` teleports its state to
+        `getCurrentAngle()` -- and then deliberately does NOT do the second:
+        it disables torque and leaves the head limp. That suits a toy on a
+        shelf. This is a desk assistant that should hold a known pose, so it
+        settles to rest afterwards.
+
+        What syncing first buys is that the settle is a MOVE rather than a
+        snap: it starts from where the head actually is, at a speed we chose,
+        and `is_moving()` is honest about how long it will take -- so idle
+        motion defers instead of firing a competing target into the middle of
+        it.
+
+        `actual` is None when the read failed, which the firmware documents as
+        a real mode (a transient ReadPos failure returns yaw/pitch null). Then
+        we fall back to assuming rest, which is what the code did before this
+        existed -- no worse, and it says so in the log.
+        """
+        if actual is not None:
+            self.chan.adopt_pose(actual)
+            logger.info(
+                "woke at yaw=%.0f pitch=%.0f, settling to rest",
+                actual.yaw, actual.pitch,
+            )
+        else:
+            logger.warning(
+                "could not read the head's angles; assuming it is at rest. "
+                "The first relative idle move may start from the wrong place."
+            )
+        self.chan.motion.move_with_speed(REST_YAW, REST_PITCH, self.WAKE_SPEED_DPS, now)
 
     # ------------------------------------------------------------- status --
     def set_status(self, status: str) -> None:

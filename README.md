@@ -404,6 +404,44 @@ duration and restores it. Without that the eyes blink over the squint.
   `setRotation`, which clamps to 0..3600, so the negative half is silently
   pinned to 0. Written here as 3600−25.
 
+### Waking up: sync first, then settle
+
+M5's boot does not recentre. `Servo::init()` reads the real angle and syncs its
+state to it, then goes limp:
+
+```cpp
+_angle_anim.teleport(getCurrentAngle());
+setTorqueEnabled(false);
+```
+
+`goHome()` exists but is only ever called by the shake reaction. Their own
+`servo.h` gives the reason for the read: a mismatch between assumed and actual
+"may cause a snap".
+
+It matters more here than it looks, because **three modifiers work relative to
+that pose** — idle's small-observation adds an offset to it, speaking baselines
+on it, and head-pet records it as the pose to restore to. Starting from an
+assumption makes all three compute from the wrong place until some absolute
+move happens to correct it.
+
+So `wake()` takes the half M5 is right about and then deliberately differs on
+the second: it reads `get_head_angles`, adopts that pose without commanding
+anything, and **then settles to rest at 40 dps** — slower than every idle speed,
+because this is the one movement a person watches from cold, and a robot that
+snaps to attention on power-up reads as a fault where one that settles reads as
+waking. M5 leaves the head limp, which suits a toy on a shelf; this is a desk
+assistant that should hold a known pose.
+
+Syncing first is what makes that settle a *move* rather than a snap: it starts
+from where the head actually is, and `is_moving()` is then honest about how long
+it will take, so idle motion defers instead of firing a competing target into
+the middle of it.
+
+The read can fail — the firmware documents a persistent `ReadPos` failure as
+returning `{"yaw": null, "pitch": null, "error": ...}`, and a single failure
+mid-motion is a known transient. That falls back to assuming rest, which is
+what the code did before any of this existed, and logs that it did.
+
 ## Expressions, and the axis we were missing
 
 M5's renderer gives every feature four independent axes — `setWeight`,

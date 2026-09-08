@@ -249,6 +249,49 @@ async def check_tools(session) -> set[str]:
     return listed
 
 
+async def read_head_pose(session) -> "Pose | None":
+    """Where the head actually is, or None if the device could not say.
+
+    None is a documented outcome, not a defensive maybe: the firmware's own
+    `get_head_angles` description says a persistent ReadPos failure returns
+    `{"yaw": null, "pitch": null, "error": ...}`, and a single-call failure
+    while the servo is mid-motion is a known transient. So this must not
+    invent a pose -- `wake()` says so in the log and falls back to assuming
+    rest, which is what the code did before any of this existed.
+    """
+    from tracking import Pose
+
+    try:
+        result = await session.call_tool("get_head_angles", {})
+    except Exception as exc:  # noqa: BLE001 - a failed read is not fatal
+        logger.warning("get_head_angles raised: %s", exc)
+        return None
+
+    for item in getattr(result, "content", None) or []:
+        text = getattr(item, "text", None)
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        yaw, pitch = payload.get("yaw"), payload.get("pitch")
+        # `null` is the documented failure, and bool is an int in Python --
+        # neither is an angle.
+        if (
+            isinstance(yaw, (int, float))
+            and isinstance(pitch, (int, float))
+            and not isinstance(yaw, bool)
+            and not isinstance(pitch, bool)
+        ):
+            return Pose(float(yaw), float(pitch))
+        if payload.get("error"):
+            logger.warning("get_head_angles reported: %s", payload["error"])
+    return None
+
+
 async def tail_events(path: Path, on_event) -> None:
     """Follow the gateway's JSONL event log, from the end.
 
@@ -301,6 +344,14 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
             effector = McpEffector(session, loop, available)
             chan = Chan(effector)
             character = driver_mod.CharacterDriver(chan, idle_motion_level=idle_level)
+
+            # Sync to where the head actually is, then settle to rest -- the
+            # better half of M5's boot sequence. Before this, the first flush
+            # commanded rest from an ASSUMED pose, so the three relative
+            # modifiers (idle's small observation, speaking's baseline,
+            # head-pet's restore point) all computed from the wrong place
+            # until an absolute move happened to correct it.
+            character.wake(0.0, await read_head_pose(session))
 
             # He starts standing by, which is what brings idle motion to life.
             character.set_status(driver_mod.STANDBY)

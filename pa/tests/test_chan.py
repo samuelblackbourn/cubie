@@ -296,3 +296,43 @@ def test_giving_up_is_bounded_so_a_broken_config_still_surfaces():
 
     assert live.CONNECT_TIMEOUT_S <= 600.0
     assert live.CONNECT_BACKOFF_S[-1] >= 5.0
+
+
+def test_a_null_angle_reply_is_not_mistaken_for_a_pose():
+    """`{"yaw": null, "pitch": null, "error": ...}` is what the firmware
+    documents for a persistent ReadPos failure. Booleans are ints in Python,
+    so those have to be rejected too."""
+    import json as _json
+
+    import live
+
+    def result(payload):
+        return type("R", (), {"content": [type("C", (), {"text": _json.dumps(payload)})()]})()
+
+    import asyncio
+
+    class Session:
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def call_tool(self, name, args):
+            return result(self.payload)
+
+    assert asyncio.run(live.read_head_pose(Session({"yaw": None, "pitch": None}))) is None
+    assert asyncio.run(live.read_head_pose(Session({"yaw": True, "pitch": False}))) is None
+    assert asyncio.run(live.read_head_pose(Session({}))) is None
+
+    pose = asyncio.run(live.read_head_pose(Session({"yaw": -60, "pitch": 20})))
+    assert (pose.yaw, pose.pitch) == (-60.0, 20.0)
+
+
+def test_a_failed_angle_read_does_not_take_the_process_down():
+    import asyncio
+
+    import live
+
+    class Broken:
+        async def call_tool(self, name, args):
+            raise ConnectionResetError("bus hang")
+
+    assert asyncio.run(live.read_head_pose(Broken())) is None

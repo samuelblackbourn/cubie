@@ -231,3 +231,61 @@ def test_a_dance_finishes_and_removes_itself():
         d.update(now)
         now += 0.1
     assert not any(isinstance(m, modifiers.DanceModifier) for m in d.chan.modifiers)
+
+
+# ----------------------------------------------------------------- wake --
+def test_waking_adopts_the_real_pose_and_settles_from_it():
+    """M5's Servo::init teleports its state to getCurrentAngle() rather than
+    driving the head. The settle is then a move from where the head IS, at a
+    speed we chose -- not a snap from an assumption."""
+    from tracking import Pose
+
+    d = fresh()
+    d.wake(0.0, Pose(-60.0, 20.0))
+    d.update(0.0)
+
+    moves = d.chan.effector.of("move_head")
+    assert len(moves) == 1
+    assert moves[0]["yaw"] == 0.0 and moves[0]["pitch"] == 45.0
+    assert moves[0]["speed_dps"] == d.WAKE_SPEED_DPS
+
+
+def test_the_wake_speed_is_slower_than_every_idle_speed():
+    """It is the one movement someone watches from cold. A robot that snaps to
+    attention on power-up reads as a fault; one that settles reads as waking."""
+    import units
+
+    d = fresh()
+    assert units.GATEWAY_SPEED_MIN_DPS <= d.WAKE_SPEED_DPS < 60
+
+
+def test_the_travel_time_is_honest_after_adopting():
+    """So idle motion defers instead of firing a competing target into the
+    middle of the settle. 60 degrees at 40 dps is 1.5 s."""
+    from tracking import Pose
+
+    d = fresh()
+    d.wake(0.0, Pose(-60.0, 45.0))
+    assert d.chan.motion.is_moving(1.0)
+    assert not d.chan.motion.is_moving(2.0)
+
+
+def test_adopting_a_pose_does_not_command_a_move_to_it():
+    """Otherwise syncing to reality would itself be a command, and the head
+    would be told to go where it already is."""
+    from tracking import Pose
+
+    d = fresh()
+    d.chan.adopt_pose(Pose(-60.0, 20.0))
+    d.chan.flush()
+    assert d.chan.effector.of("move_head") == []
+
+
+def test_an_unreadable_pose_falls_back_to_rest_rather_than_inventing_one():
+    """The firmware documents yaw/pitch null as a real outcome of a persistent
+    ReadPos failure, so this path is reached in practice."""
+    d = fresh()
+    d.wake(0.0, None)
+    d.update(0.0)
+    moves = d.chan.effector.of("move_head")
+    assert moves[-1]["yaw"] == 0.0 and moves[-1]["pitch"] == 45.0
