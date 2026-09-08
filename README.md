@@ -209,6 +209,36 @@ interpolator state across chunks, and the gateway's step becomes a no-op.
 `--robot` ring-modulates; `--crush` quantises. Both carry their state across
 chunks for the same reason the resampler does.
 
+## Idle behaviour
+
+Blinking is already in the firmware — `set_blink(enabled: true)`, every 3–6
+seconds at random. It is runtime state, so it needs asserting on connect
+rather than porting.
+
+Looking around is `pa/idle.py`, ported from M5's `modifiers/idle_motion.h`.
+Their **structure** is copied exactly, because that is what makes it feel
+right: a random 4–8 second interval rather than a fixed tick, four weighted
+actions (50% look around, 30% small observation, 10% quick glance, 10%
+recentre yaw), and "if the head is still moving, defer 500 ms rather than
+queue another command".
+
+Their **ranges are adapted, not copied**, and the distinction matters. M5 works
+in tenths of a degree with `lookAtNormalized` coordinates whose meaning depends
+on their servo mounting; our `move_head` takes degrees, pitch 5–85, and speed
+in degrees per second against their opaque 100–400 scale. Copying their numbers
+into different units would look faithful and behave wrong.
+
+The recentre action is load-bearing, not decorative: the other three
+random-walk, so without something pulling yaw back he drifts to one side over a
+few minutes and parks facing a wall. A test simulates 3000 idle steps to prove
+he doesn't — the only way that failure is visible without waiting at a desk.
+
+What is **not** ported: `breath.h` (a 16 px sine offset on the *display*,
+needing avatar APIs we haven't vendored) and `head_pet.h` (superseded by our
+own touch handling). M5's modifiers depend on their `Modifiable` interface —
+only 46 lines, but `motion::Motion` comes with it, and that owns the servos in
+a way that would fight ours.
+
 ## The shape of it
 
 ```
