@@ -255,11 +255,65 @@ random-walk, so without something pulling yaw back he drifts to one side over a
 few minutes and parks facing a wall. A test simulates 3000 idle steps to prove
 he doesn't — the only way that failure is visible without waiting at a desk.
 
-What is **not** ported: `breath.h` (a 16 px sine offset on the *display*,
-needing avatar APIs we haven't vendored) and `head_pet.h` (superseded by our
-own touch handling). M5's modifiers depend on their `Modifiable` interface —
-only 46 lines, but `motion::Motion` comes with it, and that owns the servos in
-a way that would fight ours.
+What is **not** ported yet: `breath.h` (a 16 px sine offset on the *display*),
+`idle_expression.h` (gaze drift and a mouth tilt on a 2–6 second timer),
+`speaking.h` (mouth open/close plus a subtle head nod while talking), and the
+four keyframed dances in `dance.h`. `head_pet.h` is superseded by our own touch
+handling. M5's modifiers depend on their `Modifiable` interface — only 46 lines,
+but `motion::Motion` comes with it, and that owns the servos in a way that
+would fight ours, so these are ports rather than lifts.
+
+The reason the display-side ones were blocked has now gone: they are built on
+`Element::setPosition`, which `set_gaze` exposes (below).
+
+## Expressions, and the axis we were missing
+
+M5's renderer gives every feature four independent axes — `setWeight`,
+`setSize`, `setPosition` and `setRotation`. Until `apply-m5-expression.sh` this
+firmware drove two of them. `setPosition` on the eyes is **gaze**, and its
+absence is most of why `thinking` looked like nothing.
+
+`thinking` maps to `Emotion::Doubt`, and Doubt's entire contribution is an eye
+weight of 75 against idle's 100 — a quarter of an eyelid. A thinking face is
+not a mouth shape or an eyelid position. It is a face looking *up and away from
+you*, and there was no way to say that.
+
+The axis is worth using. From the vendored skin's `eyes.cpp`:
+
+```cpp
+static const Vector2i _eye_min_offset = Vector2i(-16, -16);
+static const Vector2i _eye_max_offset = Vector2i( 16,  16);
+pos_y = _eye_pos.y + map_range(_position.y, -100, 100, min.y, max.y);
+```
+
+So the `-100..100` the API takes is ±16 px of real travel, on eyes 8–32 px
+across. It is an LVGL `setPos`, so **+y is down** and negative y looks up.
+
+Two new tools expose it, and each is **held until the next `set_avatar`** — the
+same contract `set_mouth` already documents:
+
+```
+set_gaze           x, y: -100..100    point the eyes without moving the head
+set_mouth_rotation rotation: 0..3600  tenths of a degree; -15° is 3450
+```
+
+**Why the override lives in the board and not in `LiveAvatar`.**
+`RenderLiveAvatarLocked()` calls `SetFace()` on *every* render, and a blink
+renders four times. A host gaze stored inside the avatar object would be wiped
+by the next blink, about five seconds later — not by the next `set_avatar`. So
+it is board state applied at render time, exactly how the mouth already works:
+lip-sync wins while it is the active layer, the per-face resting value applies
+otherwise. Clearing it happens in `SetAvatarExpressionLocked`, which covers the
+touch reactions and the post-fetch replay path as well as the MCP tool.
+
+The per-face gaze table is in `RenderLiveAvatarLocked`. `thinking` is
+`(-60, -70)` — up, and off to his left.
+
+One axis is **unverified on hardware**: the mouth rotation. `DefaultMouth` calls
+`setRotation` but, unlike `DefaultEyes`, sets no transform pivot of its own, so
+what it rotates about is LVGL's default and has not been seen on a panel. Only
+`thinking` uses it (15°). If it looks wrong, `kFaceMouthRotation` is the one
+knob — zero it and nothing else changes.
 
 ## The shape of it
 
