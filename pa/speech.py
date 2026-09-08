@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from typing import Iterable, Iterator, Protocol
 
@@ -193,3 +194,57 @@ def speak(
         # oddity rather than turning a success into a failure.
         logger.warning("gateway returned 200 with a non-JSON body")
         return {"ok": True, "body": response.text[:200]}
+
+
+def _main(argv: list[str]) -> int:
+    """Say something, from a terminal.
+
+    Deliberately tiny: this exists so `speak()` can be exercised against the
+    real robot without composing Python at a prompt, and so "make him say X"
+    is a repeatable command rather than a snippet in a chat log.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="speech.py",
+        description="Speak text on Cubie, synthesised locally with Piper.",
+    )
+    parser.add_argument("text", nargs="+", help="what to say")
+    parser.add_argument(
+        "--voice",
+        default=DEFAULT_VOICE,
+        help=f"Piper voice name (default {DEFAULT_VOICE})",
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=os.path.expanduser("~/.local/share/piper-voices"),
+        help="where the voice models live",
+    )
+    parser.add_argument(
+        "--url",
+        default=None,
+        help=f"gateway PCM endpoint (default {DEFAULT_PCM_URL})",
+    )
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    voice = PiperSynthesizer(voice_name=args.voice, data_dir=args.data_dir)
+
+    try:
+        result = speak(" ".join(args.text), voice, url=args.url)
+    except FileNotFoundError as exc:
+        # The model is a separate ~60 MB download, not a pip dependency, so
+        # this is the most likely first-run failure. The message carries the
+        # exact command rather than making anyone go and find it.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except SpeechError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    print(result)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv[1:]))
