@@ -209,6 +209,42 @@ interpolator state across chunks, and the gateway's step becomes a no-op.
 `--robot` ring-modulates; `--crush` quantises. Both carry their state across
 chunks for the same reason the resampler does.
 
+### The retro voice
+
+`--character retro` is `en_US-ryan-high` pitched up 30% and chopped at 22 Hz:
+a young voice sounding like it is spoken through a desk fan.
+
+The carrier frequency is the whole trick. Every other character modulates at
+45–140 Hz, which is fast enough to fuse into a tone and read as electronic. A
+fan chops at its blade-pass rate — tens of hertz — so at 22 Hz the ear hears
+the individual chops. Verified as 22 chops a second through a flat test tone
+rather than assumed from the parameter.
+
+The depth is **measured, not chosen by ear**. `ring_modulate` applies
+`gain = 1 − depth + depth·sin`, so depth 0.5 is exactly where the trough
+reaches zero and anything above it inverts phase through a full gate. At 22 Hz
+each chop lasts 45 ms, and the question is how much of it the gate eats:
+
+| depth | gain range | near-silent per chop |
+| --- | --- | --- |
+| 0.40 | +0.20 … 1.00 | none |
+| **0.45** | **+0.10 … 1.00** | **~10 ms** |
+| 0.55 | −0.10 … 1.00 | ~16 ms, and phase inverts |
+
+A gap under about 10 ms is one the ear fills in; past that speech stutters
+rather than throbs. So 0.45 is the deepest chop available before it costs
+syllables — which matters for a voice that reads out approvals.
+
+A character can now carry its own Piper model, which is new: `--voice` used to
+default to a value rather than to `None`, so “did they ask for the default or
+not ask at all?” was unanswerable and a character's own voice could never have
+taken effect. Download the model once:
+
+```
+pa/.venv/bin/python -m piper.download_voices en_US-ryan-high     --data-dir ~/.local/share/piper-voices
+pa/.venv/bin/python pa/speech.py --character retro "Approval waiting."
+```
+
 ## Language
 
 The firmware defaults to **`LANGUAGE_ZH_CN`**, so every on-screen string and
@@ -255,16 +291,102 @@ random-walk, so without something pulling yaw back he drifts to one side over a
 few minutes and parks facing a wall. A test simulates 3000 idle steps to prove
 he doesn't — the only way that failure is visible without waiting at a desk.
 
-What is **not** ported yet: `breath.h` (a 16 px sine offset on the *display*),
-`idle_expression.h` (gaze drift and a mouth tilt on a 2–6 second timer),
-`speaking.h` (mouth open/close plus a subtle head nod while talking), and the
-four keyframed dances in `dance.h`. `head_pet.h` is superseded by our own touch
-handling. M5's modifiers depend on their `Modifiable` interface — only 46 lines,
-but `motion::Motion` comes with it, and that owns the servos in a way that
-would fight ours, so these are ports rather than lifts.
+**The head was not looking around because nothing ran this.** `idle.py` was
+written, tested and never wired to a process. `pa/live.py` and
+`deploy/cubie-character.service` are that missing half.
 
-The reason the display-side ones were blocked has now gone: they are built on
-`Element::setPosition`, which `set_gaze` exposes (below).
+## The rest of M5's character stack
+
+The whole of `stackchan/modifiers/`, `stackchan/animation/` and M5's own
+xiaozhi integration (`hal/board/stackchan_display.cc`) are now ported. That
+last file is the most useful one in their tree for us: it is M5 wiring their
+avatar and modifier stack to the *same* xiaozhi-esp32 display interface our
+firmware runs, so it is a reference rather than an analogy.
+
+| Ported | From | What it does |
+| --- | --- | --- |
+| `chan.py` | `stackchan.h`, `modifiable.h` | the modifier pool, the state, the flush |
+| `units.py` | `hal_servo.cpp` | M5's units → ours |
+| `animation.py` | `animation/`, `dance.h` | keyframe engine + Happy, Robot, Panic, LookAround |
+| `modifiers.py` | `modifiers/*.h` | breath, gaze idle, head idle, speaking, head-pet, tilt, timers, dance |
+| `driver.py` | `stackchan_display.cc`, `app_avatar.cpp` | which modifiers exist when; emotion and keyword triggers |
+| `live.py` | their LVGL task | one MCP session, a 10 Hz tick, and a tail of the event log |
+
+**Modifiers never call the gateway.** They mutate state; `Chan.flush()` diffs
+it and sends only what changed. That is what makes every behaviour pure and
+seeded — the same split as `tracking.py` and `posture.ts` — and it is also the
+only version that is neither a flood nor a robot that never moves. A quiet
+second is zero calls.
+
+`set_status` is the part worth keeping faithful: idle motion and gaze drift
+exist only while standing by, and **listening removes them entirely**. A robot
+that keeps glancing around while you talk to it reads as not listening.
+
+### Three units that had to be converted, not copied
+
+1. **Angles are tenths of a degree.** Traced through `hal_servo.cpp`
+   (`angle * 16 / 5 / 10` steps at 0.3125°), not assumed. Their yaw limit of
+   ±1280 is ±128°.
+2. **Pitch is measured from a different zero, and this one would have broken
+   every call.** M5's pitch zero is their home and increasing pitch raises the
+   head; ours is 5–85 with 45 level, and `move_head` **rejects** out-of-range
+   values rather than clamping. Their dances use pitch 0 as the centre of a
+   gesture and go negative — taken literally, every one of those poses is
+   refused and the head simply never moves while the face animates. So M5 pitch
+   is read as an offset from our resting pitch. A test asserts every keyframe
+   of every dance lands inside the window.
+3. **Speed is not degrees per second.** `moveWithSpeed`'s 0–1000 feeds a spring
+   stiffness pair. There is nothing to derive, so the mapping is a stated
+   calibration and the knob to turn if ported animations feel wrong.
+
+### What the host cannot reach, and what that costs
+
+Recorded here rather than rediscovered per modifier:
+
+- **Decorators** (heart, dizzy, sweat, angry) have no host tool, so head-pet
+  loses its hearts and the tilt reaction its dizzy spiral.
+- **Element visibility** is unreachable, which the tilt reaction uses to swap
+  the eyes for the dizzy overlay.
+- **The device's IMU is not surfaced at all.** The only "IMU" in the gateway's
+  tool surface is a host-fed pose stream for head tracking. So
+  `TiltReactionModifier` is ported and **dormant** — nothing can trigger it
+  until firmware surfaces a shake. It is here so the reaction exists when that
+  lands, and so the gap is written down somewhere other than a chat log.
+- **Touch events are off by default.** `notify_config.py` defaults
+  `jsonl.enabled` to false, so stroking his head reaches nothing until
+  `deploy/stackchan-notify.yml` is installed. That is a config step, and
+  without it head-pet looks broken rather than unconfigured.
+
+### Two axes the firmware owns better than the host does
+
+`SpeakingModifier` and `BlinkModifier` both drive weights, and here the
+firmware drives them from closer to the truth: **lip-sync** off the `tts.start`
+transition, so it is synchronised to the audio rather than a 180 ms host timer,
+and **blink** as a state machine immune to LAN jitter.
+
+So there is deliberately **no host blink modifier** — two things driving one
+axis over a LAN and the eyes would visibly fight. And `SpeakingModifier` takes
+the half M5's own xiaozhi integration turns off: theirs is
+`SpeakingModifier(0, 180, false)`, mouth on and motion off; ours is the
+opposite, because the head nod is the half nothing else provides.
+
+The dances do need the weights, so `DanceModifier` suspends blink for its
+duration and restores it. Without that the eyes blink over the squint.
+
+### Three upstream bugs found while reading
+
+- **Every M5 dance applies an indeterminate eye size.**
+  `FeatureKeyframe`'s four-argument constructor — the only one any dance uses
+  — never initialises `size`, and `Keyframe::apply()` calls `setSize(kf.size)`
+  regardless. `Feature::setSize` clamps to ±100 so it cannot crash, which is
+  why it survives: it shows up as eye size varying between builds. Ported as 0.
+- **`breath.h`'s amplitude is not pixels.** Its comment says
+  “单位像素”, but `move_component` adds the delta to `getPosition()`, the
+  −100..100 normalised value. So the real amplitude is 16 *units*, about
+  2.6 px — a subtle wobble, which is what breathing should be.
+- **Half the tilt-reaction wobble never shows.** It passes −25 straight to
+  `setRotation`, which clamps to 0..3600, so the negative half is silently
+  pinned to 0. Written here as 3600−25.
 
 ## Expressions, and the axis we were missing
 
@@ -289,13 +411,35 @@ pos_y = _eye_pos.y + map_range(_position.y, -100, 100, min.y, max.y);
 So the `-100..100` the API takes is ±16 px of real travel, on eyes 8–32 px
 across. It is an LVGL `setPos`, so **+y is down** and negative y looks up.
 
-Two new tools expose it, and each is **held until the next `set_avatar`** — the
-same contract `set_mouth` already documents:
+Three new tools expose it. The first two are **held until the next
+`set_avatar`** — the same contract `set_mouth` already documents:
 
 ```
-set_gaze           x, y: -100..100    point the eyes without moving the head
-set_mouth_rotation rotation: 0..3600  tenths of a degree; -15° is 3450
+set_gaze     x, y: -100..100        point the eyes without moving the head
+set_feature  feature, x, y,         all four M5 axes on one feature:
+             rotation, weight,      'eyes', 'left_eye', 'right_eye', 'mouth'.
+             size                   Pass -1000 to leave an axis alone.
+set_speech   text                   the speech bubble; '' clears it
 ```
+
+`set_feature` exists because the whole character stack needs it: M5's
+`idle_expression`, `breath` and every keyframe of every dance set all four axes
+on all three features. Exposing them once beat growing a tool per animation.
+
+Two details in it are deliberate:
+
+- **Omitted axes are left alone**, hence the `-1000` sentinel rather than 0.
+  Weight belongs to blink and lip-sync, and size to the `surprised` override;
+  a tool that set all four unconditionally would fight the two things on this
+  device that already work well.
+- **x and y count as one axis** and must both be given. Half a position is a
+  silent jump to zero on the other, and a call that returns `ok` having done
+  something else is the failure this repo has already paid for once.
+
+`set_speech` brings `LiveAvatar::SetSpeech` to life — it was vendored in with
+M5's renderer and had been dead code, with nothing in the firmware calling it.
+M5's own driver uses the bubble for “Zzz…” and for any status string it does
+not recognise, which is how “Connecting…” ends up on his face.
 
 **Why the override lives in the board and not in `LiveAvatar`.**
 `RenderLiveAvatarLocked()` calls `SetFace()` on *every* render, and a blink
@@ -352,6 +496,32 @@ the companion token must never be committed, and rotating `AGENTHUB_COMPANION_TO
 on office-server is the only way to revoke this device.
 
 LAN only. The design note rules out a tunnel path for this device entirely.
+
+## Running the character stack
+
+```
+sudo cp deploy/cubie-character.service /etc/systemd/system/
+sudo ln -sf /etc/cubie-bridge.env /etc/cubie-character.env   # same token
+sudo systemctl daemon-reload && sudo systemctl enable --now cubie-character
+```
+
+Then, for touch to reach him at all — it is off by default:
+
+```
+sudo install -d -o stackchan-gateway -g stackchan-gateway     /var/lib/stackchan-gateway/.config/stackchan-mcp
+sudo install -o stackchan-gateway -g stackchan-gateway -m 0644     ~/cubie/deploy/stackchan-notify.yml     /var/lib/stackchan-gateway/.config/stackchan-mcp/notify.yml
+sudo systemctl restart stackchan-gateway
+```
+
+It runs on the **gateway's** interpreter, not `pa/.venv` — the `mcp` package
+lives there and nowhere else. The character logic itself imports nothing from
+it; the robot sits behind a protocol precisely so `pa/.venv` can run the tests
+with no `mcp` installed at all.
+
+`--idle-level` carries M5's four levels: 0 no head movement, 1 every 8–12 s, 2
+every 4–8 s (default), 3 every 2–4 s. The **face drifts at every level**,
+including 0 — the levels are about how much the head moves, and a still head
+with a living face is a coherent thing to want.
 
 ## The green bar
 

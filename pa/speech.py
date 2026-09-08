@@ -300,10 +300,14 @@ def _main(argv: list[str]) -> int:
     # nargs="*" not "+": --characters is an informational mode that must work
     # without text. The requirement is enforced below, after that early exit.
     parser.add_argument("text", nargs="*", help="what to say")
+    # `None`, not DEFAULT_VOICE, for the same reason every other flag below
+    # defaults to None: a character can now carry its own model, and with a
+    # value here "did they ask for the default, or not ask at all?" would be
+    # unanswerable -- so a character's voice could never take effect.
     parser.add_argument(
         "--voice",
-        default=DEFAULT_VOICE,
-        help=f"Piper voice name (default {DEFAULT_VOICE})",
+        default=None,
+        help=f"Piper voice name (default: the character's, else {DEFAULT_VOICE})",
     )
     parser.add_argument(
         "--data-dir",
@@ -375,9 +379,10 @@ def _main(argv: list[str]) -> int:
     robot = args.robot if args.robot is not None else preset.robot
     robot_hz = args.robot_hz if args.robot_hz is not None else preset.robot_hz
     crush = args.crush if args.crush is not None else preset.crush
+    voice_name = args.voice or preset.voice or DEFAULT_VOICE
 
     voice = PiperSynthesizer(
-        voice_name=args.voice,
+        voice_name=voice_name,
         data_dir=args.data_dir,
         pitch=pitch,
         variation=variation,
