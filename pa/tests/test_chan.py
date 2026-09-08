@@ -185,3 +185,48 @@ def test_a_locked_motion_ignores_move_requests():
     c.motion.locked = True
     c.motion.move_with_speed(80.0, 20.0, 100, now=0.0)
     assert c.motion.target.yaw == 0.0
+
+
+# ------------------------------------------- the gateway's closed tool table --
+def test_an_unknown_tool_answer_is_detected_despite_looking_successful():
+    """The gateway answers a tool it does not know with an ORDINARY successful
+    result whose text is `{"error": "Unknown tool: set_gaze"}` -- no isError,
+    no exception. Trusting the flag made a real blocker invisible: firmware
+    tools are unreachable until the gateway's hardcoded table knows them."""
+    import json as _json
+    import live
+
+    def result(text):
+        return type("R", (), {"content": [type("C", (), {"text": text})()]})()
+
+    assert live.failure_reason(result(_json.dumps({"error": "Unknown tool: set_gaze"}))) == (
+        "Unknown tool: set_gaze"
+    )
+    assert live.failure_reason(result(_json.dumps({"ok": False}))) is not None
+    assert live.failure_reason(result(_json.dumps({"ok": True}))) is None
+    assert live.failure_reason(result("not json at all")) is None
+    assert live.failure_reason(result("")) is None
+
+
+def test_calls_the_gateway_cannot_route_are_dropped_not_queued():
+    """Once startup has said what is missing and why, queueing calls only to
+    have them refused twice a second buries the diagnosis."""
+    import live
+
+    effector = live.McpEffector(session=None, loop=None, available={"move_head"})
+    effector.set_gaze(1, 2)
+    effector.move_head(0.0, 45.0, 60)
+    assert effector._queue.qsize() == 1
+
+
+def test_every_tool_the_effector_can_send_is_declared_as_required_or_optional():
+    """So a tool added to the effector without being taught to the gateway is
+    caught by the startup check rather than at 3 calls a second."""
+    import live
+
+    declared = set(live.REQUIRED_TOOLS) | set(live.OPTIONAL_TOOLS)
+    sendable = {
+        "set_avatar", "set_feature", "set_gaze", "set_mouth",
+        "set_speech", "set_blink", "set_all_leds", "move_head",
+    }
+    assert sendable == declared
