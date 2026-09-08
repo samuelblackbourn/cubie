@@ -526,6 +526,39 @@ sudo install -o stackchan-gateway -g stackchan-gateway -m 0644     ~/cubie/deplo
 sudo systemctl restart stackchan-gateway
 ```
 
+### Teaching the gateway this fleet's tools
+
+**Required, and the character stack refuses to start without it.** The gateway
+proxies a **hardcoded** table of tool names, so a tool added to the device
+firmware is unreachable until the gateway knows it too — it answers an unknown
+name with `{"error": "Unknown tool: set_gaze"}` and never forwards it. 0.17.0
+is the latest release on PyPI, so there is no upstream fix to wait for.
+
+```
+bash ~/cubie/gateway/apply-gateway-tools.sh
+sudo systemctl restart stackchan-gateway
+make check-gateway
+```
+
+That adds `set_gaze`, `set_feature` and `set_speech` in the two places a name
+has to appear — `tool_map` so `tools/call` routes it, and the `Tool(...)` list
+so `tools/list` advertises it, which is what the MCP SDK and `pa/live.py`'s own
+startup check actually read.
+
+Patched rather than forked, which is the same bargain the firmware makes: the
+installed bytes stay a known PyPI release and every local change is a small,
+anchored, idempotent script in this repo. A `pip install --force-reinstall`
+reverts it and re-running puts it back — a property a fork does not have.
+
+`make check-gateway` is the guard, with the contract guard's three exit codes:
+**0** everything routes, **1** something is missing and named, **2** could not
+look. The third is distinct because treating "I could not check" as "nothing
+missing" is what let this blocker reach hardware in the first place.
+
+Without those three tools the stack **runs degraded rather than failing**: head
+motion, blink, the six faces and the LED ring all work, and it logs what is
+lost — breathing, gaze drift, mouth tilt, dance faces, speech bubbles.
+
 It runs on the **gateway's** interpreter, not `pa/.venv` — the `mcp` package
 lives there and nowhere else. The character logic itself imports nothing from
 it; the robot sits behind a protocol precisely so `pa/.venv` can run the tests

@@ -1,7 +1,8 @@
 PYTHON ?= python3
 VO_REPO ?= /workspace/virtual-office
 
-.PHONY: help check check-contract check-bridge check-pa check-idempotent bridge-install pa-install
+.PHONY: help check check-contract check-bridge check-pa check-idempotent \
+        check-gateway gateway-tools bridge-install pa-install
 
 help:
 	@echo "check           the green bar (no CI by design, same as the sibling repos)"
@@ -9,6 +10,8 @@ help:
 	@echo "check-bridge    typecheck + test the bridge"
 	@echo "check-idempotent  prove the firmware patch chain converges (clones, ~minutes)"
 	@echo "check-pa        typecheck-free unit tests for the PA service"
+	@echo "check-gateway   fail if the gateway cannot route the tools pa/ calls"
+	@echo "gateway-tools   teach the installed gateway this fleet's display tools"
 	@echo "bridge-install  npm install in bridge/"
 	@echo "pa-install      create pa/.venv and install requirements"
 	@echo ""
@@ -52,6 +55,25 @@ check-pa:
 	@test -x pa/.venv/bin/pytest || { \
 	  echo "pa/.venv not found -- run 'make pa-install' first"; exit 2; }
 	pa/.venv/bin/pytest pa/tests -q
+
+# NOT part of `check`: it needs a gateway installed, which a dev machine has no
+# reason to have. Run it on office-server after touching pa/live.py's tool set
+# or bumping the gateway pin. It catches the failure that cost a round on
+# hardware -- the gateway proxies a HARDCODED tool table, so a tool added to
+# the device firmware is unreachable until the gateway knows it too, and an
+# unknown tool comes back as a successful-looking {"error": ...} that nothing
+# raises on.
+#
+# Exit 2 means "could not check" -- NOT "nothing missing" -- for the same
+# reason check-contract does.
+check-gateway:
+	$(PYTHON) gateway/check-gateway-tools.py
+
+# Applies the patch, then proves it. Idempotent: re-running prints
+# "already patched". A pip --force-reinstall reverts it; re-run this.
+gateway-tools:
+	bash gateway/apply-gateway-tools.sh
+	$(PYTHON) gateway/check-gateway-tools.py
 
 check: check-contract check-bridge check-pa
 
