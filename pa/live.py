@@ -67,6 +67,39 @@ DEFAULT_EVENT_LOG = Path("/var/lib/stackchan-gateway/.claude/stackchan-events.js
 TICK_S = 0.1
 
 
+def failure_reason(result) -> str | None:
+    """An error the MCP layer does NOT flag as one, or None.
+
+    The gateway answers a tool it does not know with an ordinary, successful
+    result whose text happens to be `{"error": "Unknown tool: set_gaze"}` -- no
+    `isError`, no exception. So `tool_failed()` returns False and a call that
+    did nothing at all reads as a success.
+
+    That is exactly the silent no-op this project keeps paying for, and it hid
+    a real blocker for a while: the gateway's tool table is hardcoded, so a
+    tool added to the DEVICE firmware is not reachable until the gateway knows
+    it too. Worth detecting rather than trusting the flag.
+    """
+    for item in getattr(result, "content", None) or []:
+        text = getattr(item, "text", None)
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if error:
+                return str(error)
+            # Our firmware tools answer {"ok": false, "error": "..."}; the
+            # `error` branch above catches those, but a bare ok:false should
+            # not pass either.
+            if payload.get("ok") is False:
+                return "tool reported ok=false"
+    return None
+
+
 class McpEffector:
     """The `Effector` protocol, spoken to the gateway.
 
@@ -77,14 +110,24 @@ class McpEffector:
     updated optimistically rather than on acknowledgement.
     """
 
-    def __init__(self, session, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self, session, loop: asyncio.AbstractEventLoop, available: set[str] | None = None
+    ) -> None:
         self._session = session
         self._loop = loop
+        # None means "assume everything works" -- only the tests do that.
+        self._available = available
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=256)
         self.dropped = 0
         self.failed = 0
+        self._failed_tools: dict[str, int] = {}
 
     def _send(self, tool: str, arguments: dict) -> None:
+        # Drop calls the gateway cannot route, rather than queueing them to be
+        # refused. check_tools() has already said what is missing and why; this
+        # keeps the queue for work that can actually happen.
+        if self._available is not None and tool not in self._available:
+            return
         try:
             self._queue.put_nowait((tool, arguments))
         except asyncio.QueueFull:
@@ -100,14 +143,28 @@ class McpEffector:
             tool, arguments = await self._queue.get()
             try:
                 result = await self._session.call_tool(tool, arguments)
-                if tool_failed(result):
-                    self.failed += 1
-                    logger.warning("%s failed: %s", tool, result)
+                reason = failure_reason(result)
+                if tool_failed(result) or reason is not None:
+                    self._count_failure(tool, reason or "call reported an error")
             except Exception as exc:  # noqa: BLE001 - one bad call must not end the run
-                self.failed += 1
-                logger.warning("%s raised: %s", tool, exc)
+                self._count_failure(tool, str(exc))
             finally:
                 self._queue.task_done()
+
+    def _count_failure(self, tool: str, reason: str) -> None:
+        """Log the first failure of each tool loudly, then rate-limit it.
+
+        A tool that cannot work never starts working, so logging every attempt
+        buries the diagnosis under thousands of identical lines -- breath alone
+        retries twice a second forever. The first line is the one that matters.
+        """
+        self.failed += 1
+        seen = self._failed_tools.get(tool, 0)
+        self._failed_tools[tool] = seen + 1
+        if seen == 0:
+            logger.error("%s FAILED: %s (further failures rate-limited)", tool, reason)
+        elif seen % 500 == 0:
+            logger.warning("%s has now failed %d times: %s", tool, seen + 1, reason)
 
     # ------------------------------------------------------------- tools --
     def set_avatar(self, face: str) -> None:
@@ -143,6 +200,55 @@ class McpEffector:
         )
 
 
+#: What the character stack calls, and what it loses without each. The gateway
+#: proxies a HARDCODED table of tool names (`tool_map` in its stdio_server),
+#: so a tool added to the device firmware is unreachable until the gateway
+#: knows it too -- and 0.17.0, the latest release, does not know these three.
+REQUIRED_TOOLS = {
+    "move_head": "the head cannot move: no idle motion, no head-pet reaction",
+    "set_avatar": "expressions cannot change",
+    "set_blink": "blinking cannot be turned on",
+}
+OPTIONAL_TOOLS = {
+    "set_gaze": "no gaze drift (idle expression) and no breathing",
+    "set_feature": "no mouth tilt, no eye size, no dance face animation",
+    "set_speech": "no speech bubble, so timed speech and the sleepy 'Zzz…' are lost",
+    "set_all_leds": "no status colour on the ring",
+    "set_mouth": "no host-driven mouth shapes (firmware lip-sync is unaffected)",
+}
+
+
+async def check_tools(session) -> set[str]:
+    """Compare what we need against what the gateway advertises.
+
+    Done once at startup because the alternative is what actually happened: a
+    missing tool answered with a successful-looking error, twice a second,
+    forever, with the diagnosis buried in thousands of identical lines.
+    """
+    listed = {tool.name for tool in (await session.list_tools()).tools}
+
+    missing_required = sorted(set(REQUIRED_TOOLS) - listed)
+    for name in missing_required:
+        logger.error("gateway does not provide %r -- %s", name, REQUIRED_TOOLS[name])
+
+    missing_optional = sorted(set(OPTIONAL_TOOLS) - listed)
+    for name in missing_optional:
+        logger.warning("gateway does not provide %r -- %s", name, OPTIONAL_TOOLS[name])
+    if missing_optional:
+        logger.warning(
+            "degraded: the gateway's tool table is hardcoded, so firmware tools "
+            "it has not been taught are unreachable. Everything else still runs."
+        )
+
+    if missing_required:
+        raise SystemExit(
+            "cannot run: the gateway is missing "
+            + ", ".join(missing_required)
+            + ". Check that stackchan-gateway is up and the device is connected."
+        )
+    return listed
+
+
 async def tail_events(path: Path, on_event) -> None:
     """Follow the gateway's JSONL event log, from the end.
 
@@ -167,7 +273,22 @@ async def tail_events(path: Path, on_event) -> None:
             on_event(event)
 
 
-async def run(mcp_url: str, event_log: Path, idle_level: int) -> int:
+#: How long to keep trying to reach the gateway before giving up.
+#:
+#: The gateway restarts -- for its own upgrades, and every time this fleet's
+#: tools are re-patched into it -- and it owns the device connection, so this
+#: process cannot do anything while it is down. Exiting immediately would make
+#: a routine `systemctl restart stackchan-gateway` look like a crash, and with
+#: a start limit on the unit a slow restart could leave the character stack
+#: dead until someone noticed.
+#:
+#: Bounded rather than infinite so a genuinely broken configuration still
+#: surfaces as a failed unit rather than a process retrying forever.
+CONNECT_TIMEOUT_S = 300.0
+CONNECT_BACKOFF_S = (1.0, 2.0, 5.0, 10.0, 15.0)
+
+
+async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
     from mcp_compat import ClientSession, auth_headers, open_streams
 
     token = os.environ.get("STACKCHAN_TOKEN") or os.environ.get("BEARER_TOKEN")
@@ -176,7 +297,8 @@ async def run(mcp_url: str, event_log: Path, idle_level: int) -> int:
     async with open_streams(mcp_url, auth_headers(token)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            effector = McpEffector(session, loop)
+            available = await check_tools(session)
+            effector = McpEffector(session, loop, available)
             chan = Chan(effector)
             character = driver_mod.CharacterDriver(chan, idle_motion_level=idle_level)
 
@@ -203,6 +325,38 @@ async def run(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
     return 0
+
+
+async def run(mcp_url: str, event_log: Path, idle_level: int) -> int:
+    """Keep the stack up across a gateway restart.
+
+    Only CONNECTION failures are retried. A missing required tool raises
+    SystemExit out of `check_tools`, and that is a configuration error which
+    retrying cannot fix -- so it propagates rather than spinning.
+    """
+    started = time.monotonic()
+    attempt = 0
+    while True:
+        try:
+            return await run_once(mcp_url, event_log, idle_level)
+        except SystemExit:
+            raise
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - anything unreachable is a retry
+            elapsed = time.monotonic() - started
+            if elapsed > CONNECT_TIMEOUT_S:
+                logger.error(
+                    "could not reach the gateway at %s for %.0fs, giving up: %s",
+                    mcp_url, elapsed, exc,
+                )
+                return 1
+            delay = CONNECT_BACKOFF_S[min(attempt, len(CONNECT_BACKOFF_S) - 1)]
+            attempt += 1
+            logger.warning(
+                "gateway unreachable (%s); retrying in %.0fs", exc, delay
+            )
+            await asyncio.sleep(delay)
 
 
 def main() -> int:
