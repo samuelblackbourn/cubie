@@ -1,0 +1,56 @@
+# Cubie's character stack: the M5 modifier port, running against the gateway.
+#
+#   sudo cp deploy/cubie-character.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cubie-character
+#
+# This is the thing that makes him look alive: breathing, blinking asserted,
+# the gaze drifting, the head looking around, and a reaction to being stroked.
+# `pa/idle.py` had been written for weeks with nothing running it, which is
+# exactly why the head was not moving -- so this unit is the missing half.
+#
+# Reads /etc/cubie-character.env for STACKCHAN_TOKEN. Mode 0600, root-owned,
+# like the gateway's and the bridge's. It may be a symlink to
+# /etc/cubie-bridge.env, which already carries that token.
+[Unit]
+Description=Cubie character stack (M5 modifiers: idle, breath, gaze, touch)
+Documentation=https://github.com/samuelblackbourn/cubie
+# The gateway owns the device connection and the loopback MCP surface this
+# dials; without it there is nothing to drive.
+After=network-online.target stackchan-gateway.service
+Wants=network-online.target stackchan-gateway.service
+
+[Service]
+Type=simple
+User=sam
+WorkingDirectory=/home/sam/cubie/pa
+EnvironmentFile=/etc/cubie-character.env
+# The GATEWAY's interpreter, not pa/.venv: the `mcp` package lives there and
+# nowhere else. The character logic itself imports nothing from it -- the
+# robot is behind a protocol precisely so pa/.venv can run the tests.
+ExecStart=/home/sam/stackchan-gateway/bin/python /home/sam/cubie/pa/live.py
+# The gateway restarts, the device drops off Wi-Fi, the robot gets unplugged.
+# None of those should end the character; restart is the backstop for a crash.
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# read-only rather than yes: the interpreter and the code both live under
+# /home/sam, so the process has to be able to read there.
+ProtectHome=read-only
+
+# NOT VERIFIED FROM THE SANDBOX: whether this User can read the gateway's
+# event log. The gateway writes it under its own StateDirectory
+# (/var/lib/stackchan-gateway/.claude/stackchan-events.jsonl), owned by
+# whichever user the gateway runs as. If this user cannot read it, touch
+# events never arrive and the head-pet reaction looks broken rather than
+# unreadable. Check before blaming the code:
+#
+#   sudo -u sam test -r /var/lib/stackchan-gateway/.claude/stackchan-events.jsonl #       && echo readable || echo NOT READABLE
+#
+# If it is not, point both ends at a shared path instead of loosening
+# permissions on the gateway's state -- set jsonl.path in notify.yml and
+# STACKCHAN_EVENTS_PATH here to the same file.
+
+[Install]
+WantedBy=multi-user.target

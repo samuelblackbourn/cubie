@@ -1,0 +1,31 @@
+# Gateway notification config, so physical events reach the character stack.
+#
+# Install as the GATEWAY's own config -- it resolves this against its HOME,
+# which the systemd drop-in sets to its StateDirectory:
+#
+#   sudo install -d -o stackchan-gateway -g stackchan-gateway \
+#       /var/lib/stackchan-gateway/.config/stackchan-mcp
+#   sudo install -o stackchan-gateway -g stackchan-gateway -m 0644 \
+#       ~/cubie/deploy/stackchan-notify.yml \
+#       /var/lib/stackchan-gateway/.config/stackchan-mcp/notify.yml
+#   sudo systemctl restart stackchan-gateway
+#
+# Without this, `jsonl.enabled` defaults to FALSE and no touch event ever
+# leaves the gateway -- so stroking his head does nothing, and it looks like a
+# bug in the head-pet reaction rather than a setting.
+#
+# Only the jsonl channel is enabled. The other two push notifications at an MCP
+# client; we want a file to tail, because the character stack is a separate
+# long-lived process rather than the gateway's MCP client.
+
+legacy_event:
+  enabled: false
+channels:
+  enabled: false
+jsonl:
+  enabled: true
+  path: ~/.claude/stackchan-events.jsonl
+
+# The default wording is left alone deliberately. `pa/live.py` reads
+# `event_type` and `subtype`, not the rendered text, so changing the templates
+# here cannot break it -- but nothing needs changing either.

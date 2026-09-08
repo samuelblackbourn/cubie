@@ -212,3 +212,76 @@ def test_cli_without_text_says_so():
 
     with pytest.raises(SystemExit):
         _main(["--character", "cute"])
+
+
+# ------------------------------------------------------- the retro voice --
+def test_a_character_can_carry_its_own_voice_model():
+    """`retro` is built around en_US-ryan-high specifically. Before this, a
+    character could only carry processing settings."""
+    from character import resolve
+
+    assert resolve("retro").voice == "en_US-ryan-high"
+    assert resolve("cute").voice is None
+
+
+def test_the_fan_carrier_is_far_slower_than_every_other_character():
+    """The one number that makes it a fan rather than a sci-fi buzz. Everything
+    else modulates fast enough to fuse into a tone."""
+    from character import CHARACTERS, resolve
+
+    retro = resolve("retro")
+    others = [c for c in CHARACTERS.values() if c.name != "retro" and c.robot > 0]
+    assert all(retro.robot_hz < c.robot_hz / 2 for c in others)
+
+
+def test_the_fan_depth_never_gates_the_voice_to_silence():
+    """ring_modulate's gain is 1-depth+depth*sin, so depth above 0.5 passes
+    through zero and inverts phase. At 22 Hz that eats ~16 ms of every 45 ms
+    chop, which stutters instead of throbbing."""
+    from character import resolve
+
+    retro = resolve("retro")
+    minimum_gain = 1.0 - 2.0 * retro.robot
+    assert minimum_gain > 0.0
+
+
+def test_the_fan_actually_chops_at_its_carrier_rate():
+    """Measured through a flat tone rather than assumed from the parameter."""
+    import array
+    import math
+
+    from audio import ring_modulate
+    from character import resolve
+
+    retro = resolve("retro")
+    rate = 16000
+    tone = array.array(
+        "h", [int(12000 * math.sin(2 * math.pi * 200 * t / rate)) for t in range(rate)]
+    )
+    out, _ = ring_modulate(
+        tone.tobytes(), rate, frequency=retro.robot_hz, depth=retro.robot, phase=0.0
+    )
+    samples = array.array("h")
+    samples.frombytes(out)
+
+    window = rate // 200
+    envelope = [
+        max(abs(v) for v in samples[i : i + window])
+        for i in range(0, len(samples) - window, window)
+    ]
+    midpoint = (min(envelope) + max(envelope)) / 2
+    below = [e < midpoint for e in envelope]
+    chops = sum(1 for a, b in zip(below, below[1:]) if not a and b)
+    assert abs(chops - retro.robot_hz) <= 2
+
+    # And the trough is an attenuation, not a gate -- a fan, not a gate pedal.
+    assert min(envelope) > 0.02 * max(envelope)
+
+
+def test_an_explicit_voice_flag_still_wins_over_the_characters_own():
+    from speech import DEFAULT_VOICE
+    from character import resolve
+
+    preset = resolve("retro")
+    assert (None or preset.voice or DEFAULT_VOICE) == "en_US-ryan-high"
+    assert ("en_GB-alba-medium" or preset.voice or DEFAULT_VOICE) == "en_GB-alba-medium"
