@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from urllib.request import urlopen
 
-from character import CHARACTERS, Character, resolve
+from character import CHARACTERS, ORDER, Character, resolve
 from speech import PiperSynthesizer, SpeechError, speak
 
 logger = logging.getLogger(__name__)
@@ -150,7 +150,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--say", help="text to speak (default: the voice names itself)")
     parser.add_argument("--data-dir", default=str(DEFAULT_DIR))
     parser.add_argument("--robot", type=float, default=0.0, metavar="DEPTH")
-    parser.add_argument("--robot-hz", type=float, default=60.0, metavar="HZ")
+    # None, not 60.0, for the reason this file's neighbours already document:
+    # with a value, "did they ask for 60 or not ask at all?" is unanswerable,
+    # so a sweep could never inherit a character's own carrier. The fallback
+    # now lives in one place instead of being an `or` that never fired.
+    parser.add_argument("--robot-hz", type=float, default=None, metavar="HZ",
+                        help="carrier frequency; default 60 for a sweep, or the "
+                             "character's own under --characters")
     parser.add_argument("--crush", type=int, default=16, metavar="BITS")
     parser.add_argument(
         "--robot-sweep",
@@ -203,17 +209,23 @@ def main(argv: list[str]) -> int:
               f"(raise --limit for more)\n")
 
     data_dir = Path(args.data_dir).expanduser()
+    #: 60 Hz is a neutral middle of the 45-140 band the other characters use.
+    #: Pass --robot-hz to sweep depth at a particular carrier -- 15 for the
+    #: fan, say, where the same depths sound nothing like they do at 60.
+    sweep_hz = args.robot_hz if args.robot_hz is not None else 60.0
     heard = 0
     attempted = 0
     for voice in shown:
         if args.characters:
-            settings = [resolve(k) for k in ("plain", "cute", "chirpy", "machine",
-                                             "gruff")]
+            # Every preset, from the one source of truth. This was a
+            # hand-written list and it silently omitted `retro` -- the one
+            # actually in use -- from the moment that preset was added.
+            settings = [CHARACTERS[k] for k in ORDER]
         elif args.robot_sweep:
             settings = [
                 Character(
                     name=f"robot {d}", description="", robot=d,
-                    robot_hz=args.robot_hz or 60.0,
+                    robot_hz=sweep_hz,
                 )
                 for d in (0.0, 0.4, 0.7, 1.0)
             ]
@@ -221,7 +233,7 @@ def main(argv: list[str]) -> int:
             settings = [
                 Character(
                     name="chosen", description="",
-                    robot=args.robot, robot_hz=args.robot_hz or 60.0,
+                    robot=args.robot, robot_hz=sweep_hz,
                     crush=args.crush,
                 )
             ]
