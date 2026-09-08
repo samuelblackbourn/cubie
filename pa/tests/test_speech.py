@@ -68,12 +68,46 @@ def speak_with(voice, capture, status=200, body='{"frames": 3}', **kwargs):
 
 
 def test_streams_every_chunk_in_order():
-    """The device must receive exactly what the voice produced."""
-    voice = StubVoice([b"\x01\x02", b"\x03\x04", b"\x05\x06"])
+    """The device receives exactly what the voice produced, when no
+    resampling is needed.
+
+    Pinned at the device rate on purpose: at 16 kHz the resampler is a
+    passthrough, so this asserts the streaming itself rather than the
+    arithmetic, which test_audio.py covers.
+    """
+    voice = StubVoice([b"\x01\x02", b"\x03\x04", b"\x05\x06"], rate=16000)
     cap: dict = {}
     speak_with(voice, cap, text="hello there", token="t")
     assert cap["content"] == b"\x01\x02\x03\x04\x05\x06"
     assert voice.calls == ["hello there"]
+
+
+def test_a_non_device_rate_voice_is_resampled_and_declared_as_16k():
+    """The fix for the broken-up audio: convert once here, and tell the
+    gateway 16 kHz so its own per-chunk resampling is a no-op."""
+    voice = StubVoice([bytes(2000)], rate=22050)
+    cap: dict = {}
+    speak_with(voice, cap, token="t")
+    assert cap["headers"]["x-sample-rate"] == "16000"
+    # 1000 samples at 22050 becomes ~726 at 16000.
+    assert 700 <= len(cap["content"]) // 2 <= 740
+
+
+def test_robot_effect_changes_the_audio():
+    import array
+    import math
+
+    samples = array.array(
+        "h", [int(15000 * math.sin(2 * math.pi * 300 * i / 16000)) for i in range(1600)]
+    )
+    plain: dict = {}
+    speak_with(StubVoice([samples.tobytes()], rate=16000), plain, token="t")
+    robotic: dict = {}
+    speak_with(
+        StubVoice([samples.tobytes()], rate=16000), robotic, token="t", robot=0.8
+    )
+    assert plain["content"] != robotic["content"]
+    assert len(plain["content"]) == len(robotic["content"])
 
 
 def test_sample_rate_header_comes_from_the_voice():

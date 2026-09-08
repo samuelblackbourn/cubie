@@ -152,6 +152,42 @@ prints the value. The gateway's token lives in `/etc/stackchan-gateway.env` as
 `STACKCHAN_TOKEN` and is the same value the bridge needs in
 `/etc/cubie-bridge.env`.
 
+## His voice
+
+Synthesised locally with Piper and streamed to the speaker; nothing leaves the
+LAN. Lip-sync comes free — it is firmware-driven off the `tts.start` state
+transition, so it works on the raw-PCM path too.
+
+```
+pa/.venv/bin/python pa/speech.py "Hello Sam."
+pa/.venv/bin/python pa/speech.py --robot 0.7 "Approval waiting."
+```
+
+**Pick a voice by hearing it, not by reading names:**
+
+```
+pa/.venv/bin/python pa/audition.py --list --lang en_GB     # what exists
+pa/.venv/bin/python pa/audition.py --lang en_GB --quality low
+pa/.venv/bin/python pa/audition.py --only en_GB-alan-low --robot-sweep
+```
+
+Each voice announces itself *in its own voice*, so they are told apart by ear.
+
+`--quality low` is not just cheaper. Low models are natively **16 kHz** — the
+device's rate — so nothing is resampled anywhere, and they sound more
+synthetic, which suits a robot.
+
+**We always send 16 kHz**, and that is load-bearing. The gateway accepts any
+rate but resamples each 8192-byte body chunk **independently** — its own
+docstring calls the error "negligible for speech-rate inputs". At 22050 Hz it
+is not: a 4.6 s sentence crosses ~25 chunk boundaries and picks up a
+discontinuity at each, which is audible as a voice that breaks up. That was the
+first thing heard from the robot. So `pa/audio.py` resamples once, carrying
+interpolator state across chunks, and the gateway's step becomes a no-op.
+
+`--robot` ring-modulates; `--crush` quantises. Both carry their state across
+chunks for the same reason the resampler does.
+
 ## The shape of it
 
 ```
