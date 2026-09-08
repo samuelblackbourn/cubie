@@ -145,3 +145,22 @@ def test_json_summary_is_returned():
     cap: dict = {}
     result = speak_with(StubVoice([b"\x00\x00"]), cap, body='{"frames": 42}', token="t")
     assert result["frames"] == 42
+
+
+# --- the command-line entry point -------------------------------------------
+
+
+def test_cli_reports_a_missing_voice_model_with_the_download_command():
+    """The model is a separate ~60 MB download, not a pip dependency, so this
+    is the most likely first-run failure. The message must carry the fix."""
+    from speech import _main
+
+    code = _main(["--data-dir", "/nonexistent", "hello"])
+    assert code == 2
+
+
+def test_cli_requires_text():
+    from speech import _main
+
+    with pytest.raises(SystemExit):
+        _main([])
