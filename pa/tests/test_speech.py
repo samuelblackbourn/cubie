@@ -236,8 +236,9 @@ def test_the_fan_carrier_is_far_slower_than_every_other_character():
 
 def test_the_fan_depth_never_gates_the_voice_to_silence():
     """ring_modulate's gain is 1-depth+depth*sin, so depth above 0.5 passes
-    through zero and inverts phase. At 22 Hz that eats ~16 ms of every 45 ms
-    chop, which stutters instead of throbbing."""
+    through zero and inverts phase. At the 22 Hz carrier this was measured at,
+    that ate ~16 ms of every 45 ms chop, which stutters instead of throbbing.
+    The gate is a property of the depth, so it holds at any carrier."""
     from character import resolve
 
     retro = resolve("retro")
@@ -274,6 +275,48 @@ def test_the_pitch_is_a_nudge_above_the_other_male_presets_not_a_leap():
 
     semitones = 12 * math.log2(resolve("retro").pitch)
     assert 3.5 <= semitones <= 4.2
+
+
+def test_the_carrier_stays_above_the_syllable_rate_floor():
+    """The floor is set by speech, not by taste. A syllable is roughly
+    150-250 ms; once the chop period approaches that, the modulation stops
+    being heard as timbre and starts ducking whole syllables unevenly -- a
+    worse artefact than a fan rather than a slower one. Two chops per syllable
+    is about as slow as this can usefully go."""
+    from character import resolve
+
+    period_ms = 1000.0 / resolve("retro").robot_hz
+    chops_per_syllable = 200.0 / period_ms
+    assert chops_per_syllable >= 2.0
+
+
+def test_depth_and_carrier_are_independent_knobs():
+    """Which is what makes them safe to tune separately: depth sets how much
+    the signal is ducked, the carrier how often. Asserted rather than assumed,
+    because the whole three-pass tuning relied on it."""
+    import array
+    import math
+
+    from audio import ring_modulate
+
+    rate = 16000
+    tone = array.array(
+        "h", [int(12000 * math.sin(2 * math.pi * 200 * t / rate)) for t in range(rate)]
+    )
+
+    def trough_fraction(hz):
+        out, _ = ring_modulate(tone.tobytes(), rate, frequency=hz, depth=0.35, phase=0.0)
+        samples = array.array("h")
+        samples.frombytes(out)
+        window = rate // 200
+        envelope = [
+            max(abs(v) for v in samples[i : i + window])
+            for i in range(0, len(samples) - window, window)
+        ]
+        return min(envelope) / max(envelope)
+
+    # Same depth, very different carriers -> the same trough.
+    assert abs(trough_fraction(22.0) - trough_fraction(15.0)) < 0.05
 
 
 def test_the_fan_actually_chops_at_its_carrier_rate():

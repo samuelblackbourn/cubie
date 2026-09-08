@@ -126,13 +126,28 @@ CHARACTERS: dict[str, Character] = {
         # the chop rate stays 22 a second. The fan is the FREQUENCY, not the
         # depth, so backing the depth off does not cost the effect.
         robot=0.35,
-        # The number that makes this a fan rather than a buzz. Every other
-        # character modulates at 45-140 Hz, fast enough to fuse into a tone
-        # and read as electronic. A fan chops at its blade-pass rate -- tens
-        # of hertz -- and at 22 Hz the ear hears the individual chops instead.
-        # Verified as 22 chops per second through a flat test tone, not
+        # The number that makes this a fan rather than a buzz, and it is a
+        # separate knob from `robot` above: depth sets HOW MUCH the signal is
+        # ducked (the trough stays 31% of peak at any frequency), and this
+        # sets HOW OFTEN. Every other character sits at 45-140 Hz, fast enough
+        # to fuse into a tone and read as electronic.
+        #
+        # 15 Hz, tuned DOWN from 22 on the robot. The floor is set by syllable
+        # length rather than by taste -- a syllable is roughly 150-250 ms, and
+        # once the chop period approaches that, the modulation stops being
+        # heard as timbre and starts ducking whole syllables unevenly, which is
+        # a worse artefact than a fan rather than a slower one:
+        #
+        #     22 Hz    45 ms    4.4 chops per syllable   roughness, a fast fan
+        #     15 Hz    67 ms    3.0 chops per syllable   clearly a fan
+        #     12 Hz    83 ms    2.4 chops per syllable   about the floor
+        #      8 Hz   125 ms    1.6 chops per syllable   pulsing, uneven
+        #      6 Hz   167 ms    1.2 chops per syllable   a tremolo, not a fan
+        #
+        # So 12 is roughly as slow as this can usefully go; 15 leaves some
+        # room. Verified as 15 chops per second through a flat test tone, not
         # assumed from the parameter.
-        robot_hz=22.0,
+        robot_hz=15.0,
     ),
     "gruff": Character(
         name="gruff",
