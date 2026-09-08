@@ -245,6 +245,37 @@ def test_the_fan_depth_never_gates_the_voice_to_silence():
     assert minimum_gain > 0.0
 
 
+def test_the_fan_leaves_no_near_silent_gap_at_all():
+    """Tuned down from 0.45 after hearing it on the robot. 0.45 was the deepest
+    chop available before the gate starts eating syllables -- the right
+    ceiling, more than wanted. Below 0.40 the trough stops being near-silent
+    entirely, which is the cliff worth staying under."""
+    import math
+
+    from character import resolve
+
+    retro = resolve("retro")
+    quiet = sum(
+        1
+        for i in range(20000)
+        if abs(1.0 - retro.robot + retro.robot * math.sin(2 * math.pi * i / 20000)) < 0.2
+    )
+    assert quiet == 0, "the chop should attenuate, never approach silence"
+    assert 1.0 - 2.0 * retro.robot >= 0.25
+
+
+def test_the_pitch_is_a_nudge_above_the_other_male_presets_not_a_leap():
+    """1.25 is +3.86 semitones over the model. Going back to 1.30 was +4.54 --
+    a 0.68-semitone difference, which is the size of step 'ever so slightly'
+    means, and it was audible on the robot."""
+    import math
+
+    from character import resolve
+
+    semitones = 12 * math.log2(resolve("retro").pitch)
+    assert 3.5 <= semitones <= 4.2
+
+
 def test_the_fan_actually_chops_at_its_carrier_rate():
     """Measured through a flat tone rather than assumed from the parameter."""
     import array
