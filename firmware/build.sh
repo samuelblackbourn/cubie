@@ -250,11 +250,13 @@ echo "  VENDORED.md records $M5_PIN, matching build.conf"
 # which means they were not reproducible and not reviewable. They are set here
 # instead, in the board config release.py actually reads.
 say "sdkconfig_append"
-python3 - "$BOARD/config.json" "http://$OFFICE_HOST:$OFFICE_PORT/api/companion/ota" <<'PYEOF'
+python3 - "$BOARD/config.json" "http://$OFFICE_HOST:$OFFICE_PORT/api/companion/ota" \
+    "$FIRMWARE_LANGUAGE" <<'PYEOF'
 import json, pathlib, sys
 
 path = pathlib.Path(sys.argv[1])
 ota_url = sys.argv[2]
+language = sys.argv[3]
 config = json.loads(path.read_text())
 
 wanted = [
@@ -267,6 +269,12 @@ wanted = [
     # version components, and a forced update that the device cannot decline
     # is a boot loop waiting for a bad image.
     f'CONFIG_OTA_URL="{ota_url}"',
+    # Without this the build is zh-CN: Chinese on screen and Chinese locale
+    # sound assets. It selects a Kconfig `choice`, so whether appending is
+    # enough to override the choice's own default is something only the build
+    # can confirm -- watch for this line in the sdkconfig_append echo, and
+    # then watch the boot screen.
+    f"CONFIG_{language}=y",
 ]
 
 builds = config.get("builds") or []
@@ -276,6 +284,22 @@ if target is None:
 
 appended = target.setdefault("sdkconfig_append", [])
 changed = False
+
+# CONFIG_LANGUAGE_* selects a Kconfig `choice`, so the options are mutually
+# exclusive -- but they are DIFFERENT KEYS, so the by-key replacement below
+# would leave both set when the language changes, and two selected options in
+# one choice is ill-defined. Drop any other language first.
+#
+# Found by a test that switched EN_US to JA_JP and got both.
+wanted_language = next((e for e in wanted if e.startswith("CONFIG_LANGUAGE_")), None)
+if wanted_language is not None:
+    stale = [e for e in appended
+             if e.startswith("CONFIG_LANGUAGE_") and e != wanted_language]
+    for entry in stale:
+        print(f"  - {entry}   (a choice allows only one)")
+        appended.remove(entry)
+        changed = True
+
 for entry in wanted:
     key = entry.split("=", 1)[0]
     # Replace by key rather than appending: OTA_URL's value changes with the
