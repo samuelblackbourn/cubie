@@ -21,6 +21,10 @@
 #   apply-face-and-touch    shy decorator + zone-travel classification
 #                           ^ anchors on the comment fix-touch-classify writes,
 #                             so it genuinely cannot run before it
+#   apply-m5-touch          replaces that classification with M5's own model:
+#                           finger POSITION from the pad levels, not zones and
+#                           not duration. Anchors on the block
+#                           apply-face-and-touch emits, so it must follow it
 #   cubie-ota-setup         build serial in PROJECT_VER, installs the publisher
 #
 # Every step is idempotent, so a re-run on an already-patched tree is a series
@@ -204,6 +208,7 @@ PATCHES=(
   fix-expression-depth.sh
   fix-touch-classify.sh
   apply-face-and-touch.sh
+  apply-m5-touch.sh
   cubie-ota-setup.sh
 )
 for patch in "${PATCHES[@]}"; do

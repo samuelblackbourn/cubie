@@ -263,6 +263,39 @@ because comparing against stale bytes proves nothing. That is not hypothetical: 
 2026-09-05 the K10's copy of this guard passed cleanly against a working tree 35
 commits behind `main`, while `main` had grown two fields it knew nothing about.
 
+## Touch, and why it took three attempts
+
+M5's factory firmware detects stroking reliably. Ours did not, twice. Their
+`hal_head_touch.cpp` explains it: **they are not measuring what we were.**
+
+The Si12T reports a 2-bit *level* per pad in one register byte. M5 keeps those
+levels and computes a weighted centroid:
+
+```
+position = (i0*(-100) + i1*0 + i2*100) / (i0 + i1 + i2)     // -100..+100
+```
+
+That is *where on the head* the finger is. A gesture is the change in that
+position since touch-down: `delta > +40` forward, `< -40` backward. **Duration
+appears nowhere in their code. Neither do zones.**
+
+Upstream reduces the same byte to three booleans with `!= 0`, discarding the
+magnitude — so position is gone before anyone can use it, and classification is
+left with hold time, which cannot separate the gestures here: release
+confirmation was 4 samples × 100 ms, so the shortest measurable press was
+~400 ms while real strokes measured 399–600 ms.
+
+The 400 ms release debounce existed, by its own comment, to "bridge
+finger-glide gaps that otherwise cut a stroke short" — a workaround for having
+thrown away the signal that made it unnecessary. Attempt two (counting distinct
+zones touched) was reconstructing a 3-level approximation of M5's continuous
+position from the booleans that survived.
+
+`apply-m5-touch.sh` keeps the levels, computes M5's position, and fires the
+swipe **while the finger is still moving** rather than on release — which is
+also why theirs feels immediate. Stroke *direction* is now known, which
+upstream never had.
+
 ## Design constraints carried from S0
 
 - **`present` absent ≠ `present: false`.** Absent means nothing is reporting; false
