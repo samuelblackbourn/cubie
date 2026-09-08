@@ -157,6 +157,28 @@ class MotionState:
     def is_moving(self, now: float) -> bool:
         return now < self.moving_until
 
+    def adopt(self, pose: Pose) -> None:
+        """Believe the head is HERE, without commanding it to move.
+
+        M5's `Servo::init()` does exactly this and it is the better half of
+        their boot sequence:
+
+            _angle_anim.teleport(getCurrentAngle());
+
+        They read the real angle and sync their state to it rather than
+        driving the head somewhere. Their own `servo.h` names the reason --
+        a mismatch between assumed and actual "may cause a snap".
+
+        It matters here because three modifiers work RELATIVE to this pose:
+        idle's small-observation adds an offset to it, speaking baselines on
+        it, and head-pet records it to restore to. Starting from an assumption
+        makes all three compute from the wrong place until the first absolute
+        move happens to correct it.
+        """
+        self.pose = pose
+        self.target = pose
+        self.moving_until = 0.0
+
     def move_with_speed(self, yaw: float, pitch: float, speed_dps: int, now: float) -> None:
         """Ask for a pose. Ignored while motion is locked, as M5 has it."""
         if self.locked:
@@ -295,6 +317,17 @@ class Chan:
         self._sent_leds: tuple[int, int, int] | None = None
         self._sent_pose: Pose | None = None
         self._sent_speed: int | None = None
+
+    def adopt_pose(self, pose: Pose) -> None:
+        """Adopt the head's real pose, and record it as already known.
+
+        Both halves matter. Without the state change the relative modifiers
+        compute from an assumption; without marking it sent, the very next
+        flush would command the head to where it already is.
+        """
+        self.motion.adopt(pose)
+        self._sent_pose = pose
+        self._sent_speed = self.motion.speed_dps
 
     # ---------------------------------------------------------- the pool --
     def add(self, modifier: Modifier) -> Modifier:

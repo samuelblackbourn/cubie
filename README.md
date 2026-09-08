@@ -211,7 +211,7 @@ chunks for the same reason the resampler does.
 
 ### The retro voice
 
-`--character retro` is `en_US-ryan-high` pitched up 30% and chopped at 22 Hz:
+`--character retro` is `en_US-ryan-high` pitched up 25% and chopped at 22 Hz:
 a young voice sounding like it is spoken through a desk fan.
 
 The carrier frequency is the whole trick. Every other character modulates at
@@ -223,17 +223,33 @@ rather than assumed from the parameter.
 The depth is **measured, not chosen by ear**. `ring_modulate` applies
 `gain = 1 − depth + depth·sin`, so depth 0.5 is exactly where the trough
 reaches zero and anything above it inverts phase through a full gate. At 22 Hz
-each chop lasts 45 ms, and the question is how much of it the gate eats:
+each chop lasts 45 ms, and there is a cliff between 0.45 and 0.40 — that is
+where the trough stops being near-silent:
 
-| depth | gain range | near-silent per chop |
-| --- | --- | --- |
-| 0.40 | +0.20 … 1.00 | none |
-| **0.45** | **+0.10 … 1.00** | **~10 ms** |
-| 0.55 | −0.10 … 1.00 | ~16 ms, and phase inverts |
+| depth | gain range | swing | near-silent per chop |
+| --- | --- | --- | --- |
+| 0.55 | −0.10 … 1.00 | — | ~16 ms, and phase inverts |
+| 0.45 | +0.10 … 1.00 | 10.0:1 | ~10 ms |
+| 0.40 | +0.20 … 1.00 | 5.0:1 | none |
+| **0.35** | **+0.30 … 1.00** | **3.3:1** | **none** |
 
 A gap under about 10 ms is one the ear fills in; past that speech stutters
-rather than throbs. So 0.45 is the deepest chop available before it costs
-syllables — which matters for a voice that reads out approvals.
+rather than throbs. **0.45 is the deepest chop available** before it costs
+syllables — the right ceiling for a voice that reads out approvals, and more
+than wanted in practice.
+
+### Both numbers were tuned down on the robot
+
+The measurements above set the ceilings; hearing it set the values. Pitch went
+1.30 → **1.25** (+4.54 → +3.86 semitones over the model, a 0.68-semitone drop —
+under the ~1 semitone that reads as a nudge rather than a different voice), and
+depth went 0.45 → **0.35**, which clears the near-silence cliff and softens the
+throb as well.
+
+Measured through a flat tone, that raises the trough from 11% of peak to 31%
+while the chop rate stays **22 a second**. The fan is the *frequency*, not the
+depth, so backing the depth off does not cost the effect — which is the whole
+reason the carrier was the number worth getting right first.
 
 A character can now carry its own Piper model, which is new: `--voice` used to
 default to a value rather than to `None`, so “did they ask for the default or
@@ -387,6 +403,44 @@ duration and restores it. Without that the eyes blink over the squint.
 - **Half the tilt-reaction wobble never shows.** It passes −25 straight to
   `setRotation`, which clamps to 0..3600, so the negative half is silently
   pinned to 0. Written here as 3600−25.
+
+### Waking up: sync first, then settle
+
+M5's boot does not recentre. `Servo::init()` reads the real angle and syncs its
+state to it, then goes limp:
+
+```cpp
+_angle_anim.teleport(getCurrentAngle());
+setTorqueEnabled(false);
+```
+
+`goHome()` exists but is only ever called by the shake reaction. Their own
+`servo.h` gives the reason for the read: a mismatch between assumed and actual
+"may cause a snap".
+
+It matters more here than it looks, because **three modifiers work relative to
+that pose** — idle's small-observation adds an offset to it, speaking baselines
+on it, and head-pet records it as the pose to restore to. Starting from an
+assumption makes all three compute from the wrong place until some absolute
+move happens to correct it.
+
+So `wake()` takes the half M5 is right about and then deliberately differs on
+the second: it reads `get_head_angles`, adopts that pose without commanding
+anything, and **then settles to rest at 40 dps** — slower than every idle speed,
+because this is the one movement a person watches from cold, and a robot that
+snaps to attention on power-up reads as a fault where one that settles reads as
+waking. M5 leaves the head limp, which suits a toy on a shelf; this is a desk
+assistant that should hold a known pose.
+
+Syncing first is what makes that settle a *move* rather than a snap: it starts
+from where the head actually is, and `is_moving()` is then honest about how long
+it will take, so idle motion defers instead of firing a competing target into
+the middle of it.
+
+The read can fail — the firmware documents a persistent `ReadPos` failure as
+returning `{"yaw": null, "pitch": null, "error": ...}`, and a single failure
+mid-motion is a known transient. That falls back to assuming rest, which is
+what the code did before any of this existed, and logs that it did.
 
 ## Expressions, and the axis we were missing
 

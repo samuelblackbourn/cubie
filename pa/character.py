@@ -92,28 +92,40 @@ CHARACTERS: dict[str, Character] = {
             "The 1970s robot: a young voice chopped by a slow carrier, so it "
             "sounds like it is being spoken through a desk fan. Built on "
             "en_US-ryan-high specifically -- a clear male voice with the "
-            "headroom to be pitched up a long way without going thin."
+            "headroom to be pitched up without going thin. Tuned on the robot "
+            "rather than by ear at a desk: both the pitch and the chop are a "
+            "step gentler than the measured maxima."
         ),
         voice="en_US-ryan-high",
-        pitch=1.3,
+        # 1.25, not 1.30. Tuned DOWN after hearing it on the robot: 1.30 is
+        # +4.54 semitones over the model and read as slightly too young, where
+        # 1.25 is +3.86 -- a drop of 0.68 of a semitone, which is under the
+        # ~1 semitone that reads as a nudge rather than a different voice.
+        #
+        # `pitch` also sets Piper's length_scale by the same factor, so the
+        # utterance keeps its duration; this is a pitch and formant shift, not
+        # a speed-up.
+        pitch=1.25,
         variation=0.35,
-        # 0.45, and the value is measured rather than chosen by ear.
+        # 0.35, tuned DOWN from 0.45 after hearing it, and 0.40 is the reason
+        # the step is this big rather than smaller.
         #
         # `ring_modulate` applies gain = 1 - depth + depth*sin, so the gain
-        # sweeps from 1-2*depth up to 1. That makes depth 0.5 the point where
-        # the trough exactly reaches zero, and anything above it inverts phase
-        # through a full gate. At 22 Hz each chop lasts 45 ms, so the question
-        # is how much of that the gate eats:
+        # sweeps from 1-2*depth up to 1. There is a cliff between 0.45 and
+        # 0.40, because that is where the trough stops being near-silent:
         #
-        #     depth 0.40   gain +0.20..1.00   no audible gap
-        #     depth 0.45   gain +0.10..1.00   ~10 ms near-silent per chop
+        #     depth 0.45   gain +0.10..1.00   swing 10.0:1   ~10 ms near-silent
+        #     depth 0.40   gain +0.20..1.00   swing  5.0:1   no gap at all
+        #     depth 0.35   gain +0.30..1.00   swing  3.3:1   no gap at all
         #     depth 0.55   gain -0.10..1.00   ~16 ms, and phase inverts
         #
-        # A gap under about 10 ms is one the ear fills in; past that speech
-        # starts to stutter rather than throb. 0.45 is therefore the deepest
-        # chop available before it costs syllables -- which matters because
-        # this voice reads out approvals.
-        robot=0.45,
+        # 0.45 was the deepest chop available before the gate starts eating
+        # syllables -- correct as a ceiling, and more than wanted in practice.
+        # 0.35 clears the cliff and softens the throb as well: measured
+        # through a flat tone, the trough rises from 11% of peak to 31% while
+        # the chop rate stays 22 a second. The fan is the FREQUENCY, not the
+        # depth, so backing the depth off does not cost the effect.
+        robot=0.35,
         # The number that makes this a fan rather than a buzz. Every other
         # character modulates at 45-140 Hz, fast enough to fuse into a tone
         # and read as electronic. A fan chops at its blade-pass rate -- tens
