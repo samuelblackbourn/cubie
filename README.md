@@ -211,20 +211,39 @@ chunks for the same reason the resampler does.
 
 ### The retro voice
 
-`--character retro` is `en_US-ryan-high` pitched up 25% and chopped at 22 Hz:
+`--character retro` is `en_US-ryan-high` pitched up 25% and chopped at 15 Hz:
 a young voice sounding like it is spoken through a desk fan.
 
 The carrier frequency is the whole trick. Every other character modulates at
 45–140 Hz, which is fast enough to fuse into a tone and read as electronic. A
-fan chops at its blade-pass rate — tens of hertz — so at 22 Hz the ear hears
-the individual chops. Verified as 22 chops a second through a flat test tone
+fan chops at its blade-pass rate — tens of hertz — so in this band the ear
+hears the individual chops. Verified by counting them through a flat test tone
 rather than assumed from the parameter.
+
+**Depth and frequency are independent knobs**, which is what makes them safe to
+tune separately: depth sets *how much* the signal is ducked — the trough stays
+31% of peak at any frequency — and the carrier sets *how often*.
+
+The floor on the carrier is set by syllable length, not by taste. A syllable is
+roughly 150–250 ms, and once the chop period approaches that, the modulation
+stops being heard as timbre and starts ducking whole syllables unevenly — a
+worse artefact than a fan, not a slower one:
+
+| carrier | period | chops per syllable | reads as |
+| --- | --- | --- | --- |
+| 22 Hz | 45 ms | 4.4 | roughness; a fast fan |
+| **15 Hz** | **67 ms** | **3.0** | **clearly a fan** |
+| 12 Hz | 83 ms | 2.4 | about the floor |
+| 8 Hz | 125 ms | 1.6 | pulsing, uneven |
+| 6 Hz | 167 ms | 1.2 | a tremolo, not a fan |
+
+So 12 Hz is roughly as slow as this can usefully go, and 15 leaves some room.
 
 The depth is **measured, not chosen by ear**. `ring_modulate` applies
 `gain = 1 − depth + depth·sin`, so depth 0.5 is exactly where the trough
-reaches zero and anything above it inverts phase through a full gate. At 22 Hz
-each chop lasts 45 ms, and there is a cliff between 0.45 and 0.40 — that is
-where the trough stops being near-silent:
+reaches zero and anything above it inverts phase through a full gate. There is
+a cliff between 0.45 and 0.40 — that is where the trough stops being
+near-silent (durations below are at the 22 Hz carrier this was measured at):
 
 | depth | gain range | swing | near-silent per chop |
 | --- | --- | --- | --- |
@@ -240,16 +259,19 @@ than wanted in practice.
 
 ### Both numbers were tuned down on the robot
 
-The measurements above set the ceilings; hearing it set the values. Pitch went
-1.30 → **1.25** (+4.54 → +3.86 semitones over the model, a 0.68-semitone drop —
-under the ~1 semitone that reads as a nudge rather than a different voice), and
-depth went 0.45 → **0.35**, which clears the near-silence cliff and softens the
-throb as well.
+The measurements above set the ceilings; hearing it set the values, over three
+passes on the robot:
 
-Measured through a flat tone, that raises the trough from 11% of peak to 31%
-while the chop rate stays **22 a second**. The fan is the *frequency*, not the
-depth, so backing the depth off does not cost the effect — which is the whole
-reason the carrier was the number worth getting right first.
+| | first | now | why |
+| --- | --- | --- | --- |
+| pitch | 1.30 | **1.25** | +4.54 → +3.86 semitones; a 0.68 st drop, under the ~1 st that reads as a different voice |
+| depth | 0.45 | **0.35** | clears the near-silence cliff and softens the throb; trough 11% → 31% of peak |
+| carrier | 22 Hz | **15 Hz** | a slower fan; 3.0 chops per syllable, still comfortably above the ~2 floor |
+
+Each was measured through a flat test tone after the change, which is how the
+independence of the two modulation knobs got established: dropping the carrier
+from 22 to 15 left the trough at 31% of peak, and dropping the depth left the
+chop count untouched.
 
 A character can now carry its own Piper model, which is new: `--voice` used to
 default to a value rather than to `None`, so “did they ask for the default or
