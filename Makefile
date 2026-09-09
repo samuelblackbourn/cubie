@@ -2,7 +2,7 @@ PYTHON ?= python3
 VO_REPO ?= /workspace/virtual-office
 
 .PHONY: help check check-contract check-bridge check-pa check-idempotent \
-        check-gateway gateway-tools bridge-install pa-install
+        check-gateway check-config gateway-tools bridge-install pa-install
 
 help:
 	@echo "check           the green bar (no CI by design, same as the sibling repos)"
@@ -11,6 +11,7 @@ help:
 	@echo "check-idempotent  prove the firmware patch chain converges (clones, ~minutes)"
 	@echo "check-pa        typecheck-free unit tests for the PA service"
 	@echo "check-gateway   fail if the gateway cannot route the tools pa/ calls"
+	@echo "check-config    prove the sdkconfig patcher keeps one option per choice"
 	@echo "gateway-tools   teach the installed gateway this fleet's display tools"
 	@echo "bridge-install  npm install in bridge/"
 	@echo "pa-install      create pa/.venv and install requirements"
@@ -75,7 +76,13 @@ gateway-tools:
 	bash gateway/apply-gateway-tools.sh
 	$(PYTHON) gateway/check-gateway-tools.py
 
-check: check-contract check-bridge check-pa
+# Part of `check`: it runs in a second, needs no clone and no gateway, and it
+# guards a failure that is silent by construction -- two selected options in
+# one Kconfig `choice` is an ill-defined build rather than an error.
+check-config:
+	$(PYTHON) firmware/check-config-choices.py
+
+check: check-contract check-bridge check-pa check-config
 
 # NOT part of `check`: it clones two repositories. Run it after touching
 # anything in firmware/*.sh. It catches a failure mode that is otherwise
