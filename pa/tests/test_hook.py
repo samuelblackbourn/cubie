@@ -17,6 +17,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import json
 from pathlib import Path
 
 import pytest
@@ -430,3 +431,184 @@ def test_a_sender_that_stalls_does_not_hold_a_thread_for_ever():
     capture is a slow death rather than a visible fault."""
     assert hook_mod._Handler.timeout is not None
     assert hook_mod._Handler.timeout <= 60
+
+
+# --- the preview route ------------------------------------------------------
+#
+# Routed by path, where a capture is not. The fall-through is the point: a
+# mistyped STACKCHAN_AUDIO_HOOK_URL must still deliver audio, which was the
+# reason the receiver accepted any path in the first place.
+
+
+class Previewer(Receiver):
+    """A receiver with a preview callback, passed through the CONSTRUCTOR.
+
+    The first version assigned `receiver.on_preview` after construction, which
+    meant `HookReceiver`'s own `on_preview` parameter -- the thing `live.py`
+    actually uses -- was never exercised by any test.
+    """
+
+    def __init__(self, answer=(True, "spoke", False), **kwargs):
+        self.previews = []
+        self.answer = answer
+        super().__init__(on_preview=self._on_preview, **kwargs)
+
+    def _on_preview(self, settings):
+        self.previews.append(settings)
+        return self.answer
+
+    def preview(self, body: bytes = b'{"settings": {"pitch": 1.2}}', token=TOKEN):
+        return self.post(body, token=token, path="/preview")
+
+
+def test_a_preview_asks_the_character_stack_to_speak(served):
+    r = Previewer()
+    try:
+        status, text = r.preview()
+        assert status == 200
+        assert json.loads(text)["spoke"] is True
+        assert len(r.previews) == 1
+        assert r.previews[0].pitch == 1.2
+    finally:
+        r.close()
+
+
+def test_a_preview_while_he_is_talking_is_refused_with_a_reason(served):
+    """409 rather than 503: the request was fine and the state was wrong, which
+    is the distinction the office API already makes for a stale approval."""
+    r = Previewer(answer=(False, "he is mid-conversation", True))
+    try:
+        status, text = r.preview()
+        assert status == 409
+        assert "mid-conversation" in text
+    finally:
+        r.close()
+
+
+def test_a_preview_clamps_and_says_what_it_changed(served):
+    """Silently clamping is how a person decides the robot ignores them."""
+    r = Previewer()
+    try:
+        status, text = r.preview(b'{"settings": {"robot": 9}}')
+        assert status == 200
+        body = json.loads(text)
+        assert any("clamped" in note for note in body["adjusted"])
+        assert r.previews[0].robot == 1.0
+    finally:
+        r.close()
+
+
+def test_a_capture_still_works_on_a_path_that_is_not_the_preview(served):
+    """The whole reason any path is accepted. A typo in the hook URL must not
+    become the silent no-audio failure the receiver exists to remove."""
+    r = served()
+    assert r.post(b"ogg bytes", path="/audioo")[0] == 202
+    assert r.arrived.wait(timeout=5)
+    assert r.captures[0].body == b"ogg bytes"
+
+
+def test_the_preview_path_is_not_treated_as_a_capture(served):
+    r = served()
+    status, _ = r.post(b'{"settings": {}}', path="/preview")
+    assert status == 501, "no on_preview installed, so it must say so"
+    assert not r.captures, "a preview must never be mistaken for audio"
+
+
+def test_a_preview_with_no_voice_available_says_so_rather_than_failing_quietly(served):
+    """`on_preview` is None when there is no brain, and therefore no voice."""
+    r = served()
+    status, text = r.post(b'{"settings": {}}', path="/preview")
+    assert status == 501
+    assert "not available" in text
+
+
+def test_a_preview_body_that_is_not_json_is_a_400(served):
+    r = Previewer()
+    try:
+        assert r.preview(b"pitch=1.2")[0] == 400
+        assert not r.previews
+    finally:
+        r.close()
+
+
+def test_a_preview_still_needs_the_token(served):
+    r = Previewer()
+    try:
+        assert r.preview(token="w" * 64)[0] == 401
+        assert not r.previews
+    finally:
+        r.close()
+
+
+def test_the_query_string_does_not_stop_a_preview_being_routed(served):
+    r = Previewer()
+    try:
+        assert r.post(b'{"settings": {}}', token=TOKEN, path="/preview?from=panel")[0] == 200
+        assert len(r.previews) == 1
+    finally:
+        r.close()
+
+
+def test_a_voice_failure_is_not_reported_as_him_being_busy():
+    """409 and 500 are different answers to different questions. Collapsing
+    them -- which the first version did -- has the panel say "he is busy" when
+    he is actually mute, and mute is the failure this whole path guards."""
+    r = Previewer(answer=(False, "the voice failed; see the log", False))
+    try:
+        status, text = r.preview()
+        assert status == 500
+        body = json.loads(text)
+        assert body["spoke"] is False
+        assert "voice failed" in body["detail"]
+    finally:
+        r.close()
+
+
+def test_every_preview_answer_is_json_with_the_same_keys():
+    """The panel has one shape to parse and one place to read a reason. Six of
+    the eight branches used to answer bare prose, and the two that did answer
+    JSON were labelled text/plain."""
+    cases = []
+    r = Previewer()
+    try:
+        cases.append(r.preview())                                    # 200
+        cases.append(r.preview(b"not json"))                         # 400
+        cases.append(r.preview(b'"a string"'))                       # 400
+        cases.append(r.preview(token="w" * 64))                      # 401 -- not a preview reply
+    finally:
+        r.close()
+    plain = served_preview_unavailable()
+    cases.append(plain)
+
+    for status, text in cases:
+        if status == 401:
+            continue  # auth is refused before the route is known; prose is right there
+        body = json.loads(text)
+        assert set(body) >= {"spoke", "detail", "adjusted"}, body
+        assert body["spoke"] is (status == 200)
+
+
+def served_preview_unavailable():
+    r = Receiver()
+    try:
+        return r.post(b'{"settings": {}}', path="/preview")
+    finally:
+        r.close()
+
+
+def test_a_preview_that_raises_answers_500_rather_than_dropping_the_connection():
+    """An unhandled exception on the server thread closes the socket with no
+    reply, which the panel cannot tell from the robot being unplugged."""
+    class Exploding(Previewer):
+        def _on_preview(self, settings):
+            raise RuntimeError("the loop is closed")
+
+    r = Exploding()
+    try:
+        status, text = r.preview()
+        assert status == 500
+        assert "the preview failed" in json.loads(text)["detail"]
+        # And it is still serving.
+        assert r.post(b"ogg", path="/audio")[0] == 202
+    finally:
+        r.close()

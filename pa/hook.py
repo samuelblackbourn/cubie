@@ -36,22 +36,39 @@ convenience. `http.server` in a thread costs one small bridge into the event
 loop and buys a receiver that can be tested over a real socket with no robot,
 no gateway and no model.
 
---- Why any path is accepted ---
+--- Why almost any path is accepted ---
 
-Deliberate. The failure this whole file exists to remove is audio silently not
-arriving, and a mismatch between the path in `STACKCHAN_AUDIO_HOOK_URL` and the
-path expected here would be exactly that failure wearing a different hat. The
-requested path is logged, so a typo is visible rather than fatal.
+The failure this file exists to remove is audio silently not arriving, and a
+mismatch between the path in `STACKCHAN_AUDIO_HOOK_URL` and the path expected
+here would be exactly that failure wearing a different hat. So a POST to any
+path that is not a NAMED route is treated as a capture, and the requested path
+is logged -- a typo is visible rather than fatal.
+
+There is now one named route, `/preview`, and the fall-through is what keeps the
+original property: a mistyped hook URL still delivers audio unless the typo
+happens to be exactly `/preview`.
+
+--- Why the preview lives here at all ---
+
+Because this is the only authenticated HTTP surface the character stack has, and
+because the decision it has to make is one only the character stack can make.
+"Refuse a preview while he is mid-conversation" needs `Conversation.busy`, which
+the office cannot see; an office that spawned the voice itself would bypass the
+one thing that knows whether he is already talking, and two producers would
+stream into the same capture endpoint.
 """
 
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
+
+import voice_settings
 
 logger = logging.getLogger("cubie.hook")
 
@@ -68,6 +85,9 @@ DEFAULT_PORT = 8768
 #: which at ~120 kB a minute is a little over half an hour. Past that the body
 #: is refused unread rather than buffered.
 DEFAULT_MAX_BYTES = 4 * 1024 * 1024
+
+#: The one named route. Everything else that POSTs here is a capture.
+PREVIEW_PATH = "/preview"
 
 #: What belongs in STACKCHAN_AUDIO_HOOK_URL when the defaults are used. Built
 #: here rather than in two places, because a receiver listening on one URL
@@ -134,6 +154,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(400, "body shorter than Content-Length")
             return
 
+        # Named routes first; everything else is a capture. See the module
+        # docstring for why the fall-through is the point rather than laziness.
+        if self.path.split("?")[0].rstrip("/") == PREVIEW_PATH:
+            self._preview(body)
+            return
+
         session_id = self.headers.get("X-StackChan-Session", "") or ""
         logger.info(
             "capture: %d bytes path=%s session=%s",
@@ -148,15 +174,73 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001 - a handoff must never kill the server
             logger.exception("capture handoff raised")
 
+    def _preview(self, body: bytes) -> None:
+        """Say a line with the given settings, or say why not.
+
+        Answers synchronously, unlike a capture: the caller is a person waiting
+        to hear something, and the only useful reply is whether it happened.
+        A refusal has to arrive as a refusal rather than as silence, because
+        silence is indistinguishable from the robot being unplugged.
+        """
+        receiver = self.receiver
+        if receiver.on_preview is None:
+            self._json(501, spoke=False,
+                       detail="previews are not available: no voice on this stack")
+            return
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            self._json(400, spoke=False, detail=f"body is not JSON: {exc}")
+            return
+        if not isinstance(payload, dict):
+            self._json(400, spoke=False, detail="body must be a JSON object")
+            return
+
+        settings, notes = voice_settings.coerce(payload.get("settings"))
+        for note in notes:
+            logger.info("preview settings: %s", note)
+
+        try:
+            ok, detail, busy = receiver.on_preview(settings)
+        except Exception as exc:  # noqa: BLE001 - a preview is not worth the server
+            logger.exception("preview raised")
+            self._json(500, spoke=False, detail=f"the preview failed: {exc}", adjusted=notes)
+            return
+
+        # 409 only for "he is talking": the request was fine and the state was
+        # wrong, which is the distinction the office API already makes for a
+        # stale approval. A voice that FAILED is a 500 -- collapsing it into 409
+        # would have the panel report "he is busy" when he is actually mute,
+        # which is the one failure this whole file is careful about.
+        if ok:
+            status = 200
+        elif busy:
+            status = 409
+        else:
+            status = 500
+        self._json(status, spoke=ok, detail=detail, adjusted=notes)
+
+    def _json(self, status: int, **body) -> None:
+        """Answer a preview. Always JSON, always the same keys.
+
+        Every branch of `_preview` goes through here: the panel has one shape to
+        parse and one place to read a reason from, whether it was refused,
+        rejected or unavailable. The first version answered two branches with
+        JSON labelled `text/plain` and six with bare prose.
+        """
+        body.setdefault("adjusted", [])
+        self._reply(status, json.dumps(body), content_type="application/json")
+
     def do_GET(self) -> None:  # noqa: N802
         # Not part of the contract; answered so a human poking at the port
         # gets something other than a hang.
         self._reply(405, "POST an Ogg/Opus capture")
 
-    def _reply(self, status: int, message: str) -> None:
+    def _reply(self, status: int, message: str, content_type: str = "text/plain") -> None:
         payload = message.encode("utf-8", "replace")
         self.send_response(status)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         if status >= 300:
             # Every rejection above answers WITHOUT reading the body -- that is
@@ -180,7 +264,9 @@ class HookReceiver:
     """The webhook, on a thread of its own.
 
     `on_capture` is called **from the server thread** and must not block: from
-    `live.py` it is a `call_soon_threadsafe` into the event loop. It is called
+    `live.py` it is a `call_soon_threadsafe` into the event loop.
+
+    `on_preview` is the exception to that rule, deliberately -- see `_preview`. It is called
     after the response has been written, so raising cannot fail the POST -- it
     is caught and logged instead, because a handoff bug should cost one turn
     rather than the receiver.
@@ -191,6 +277,7 @@ class HookReceiver:
         token: str,
         on_capture: Callable[[Capture], None],
         *,
+        on_preview: "Callable[[voice_settings.VoiceSettings], tuple[bool, str, bool]] | None" = None,
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         max_bytes: int = DEFAULT_MAX_BYTES,
@@ -207,6 +294,15 @@ class HookReceiver:
             )
         self._token = token
         self.on_capture = on_capture
+        #: Called on the server thread for a `/preview` POST, and unlike
+        #: `on_capture` it MAY block: the caller is a person waiting to hear
+        #: something, and the reply is the answer. Returns
+        #: (spoke, detail, was_busy) -- the third distinguishes "he is talking"
+        #: from "the voice broke", which are 409 and 500 and must not be
+        #: conflated: one is a state and the other is him being mute.
+        #: None disables the route, which is what happens when there is no
+        #: brain and so no voice to preview with.
+        self.on_preview = on_preview
         self.max_bytes = max_bytes
         handler = type("_BoundHandler", (_Handler,), {"receiver": self})
         self._server = ThreadingHTTPServer((host, port), handler)

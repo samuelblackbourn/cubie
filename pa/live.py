@@ -51,6 +51,7 @@ import hook as hook_mod  # noqa: E402
 import office as office_mod  # noqa: E402
 import ogg_opus  # noqa: E402
 import transcribe as transcribe_mod  # noqa: E402
+import voice_settings  # noqa: E402
 from chan import Chan  # noqa: E402
 from tracking import Pose  # noqa: E402
 
@@ -278,7 +279,11 @@ SPEECH_SCRIPT = Path(__file__).resolve().parent / "speech.py"
 DEFAULT_CHARACTER = "retro"
 
 
-async def speak_line(text: str, character: str = DEFAULT_CHARACTER) -> bool:
+async def speak_line(
+    text: str,
+    character: str = DEFAULT_CHARACTER,
+    settings: "voice_settings.VoiceSettings | None" = None,
+) -> bool:
     """Say one line, by running the voice with its own interpreter.
 
     Deliberately the same command a person would type, rather than a private
@@ -291,8 +296,16 @@ async def speak_line(text: str, character: str = DEFAULT_CHARACTER) -> bool:
         logger.error("no voice: %s does not exist -- run `make pa-install`", PA_PYTHON)
         return False
 
+    # The overrides go on the command line rather than into the preset,
+    # because the preset is a record of what was tuned by ear and its numbers
+    # are pinned by tests. The CLI's own defaults are None so an explicit flag
+    # always wins -- including a 0, which is how a preset's modulation is
+    # silenced rather than merely reduced.
+    overrides = settings.flags() if settings is not None else []
+
     process = await asyncio.create_subprocess_exec(
-        str(PA_PYTHON), str(SPEECH_SCRIPT), "--character", character, text,
+        str(PA_PYTHON), str(SPEECH_SCRIPT), "--character", character,
+        *overrides, text,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -409,6 +422,54 @@ async def _read_office(client) -> "office_mod.OfficeState | None":
     return state
 
 
+class VoiceOverrides:
+    """The voice settings the office is currently asking for.
+
+    A mutable holder rather than a value passed around, because two things need
+    the same reading at different times: the poll writes it every fifteen
+    seconds, and every utterance reads whatever is there when it speaks. Passing
+    a value would freeze it at whichever moment the closure was built.
+
+    `None` from the office means "said nothing about the voice", which is
+    deliberately not the same as "use no overrides". An office too old to know
+    about the panel would otherwise silently reset the voice on the first poll,
+    and the symptom would be Cubie changing how he sounds for no visible reason.
+    """
+
+    def __init__(self) -> None:
+        self.current = voice_settings.VoiceSettings()
+        #: The last payload seen, so an unchanged reading is silent rather than
+        #: re-logging its complaints on every poll.
+        self._last_raw: object = None
+
+    def take(self, raw) -> None:
+        if raw is None:
+            return
+        settings, notes = voice_settings.coerce(raw)
+        # Complaints only when the reading CHANGES. The poll runs every fifteen
+        # seconds against an office whose stored settings rarely move, so
+        # logging on every pass would put the same "clamped robot 9 -> 1.0" line
+        # in the journal four times a minute for as long as a slider stayed
+        # wrong -- flooding the one log that is the diagnostic for this feature.
+        if settings == self.current and raw == self._last_raw:
+            return
+        self._last_raw = raw
+        for note in notes:
+            logger.warning("office voice settings: %s", note)
+        if settings != self.current:
+            logger.info("voice settings changed: %s", settings)
+        self.current = settings
+
+
+#: What a preview says. Fixed rather than free text: the panel is a settings
+#: surface, not a way to put words in his mouth, and a line with a bit of
+#: everything in it is what you want to hear repeatedly while tuning anyway.
+PREVIEW_LINE = "Two approvals are waiting, and one agent is still working."
+
+#: How long to wait for a preview before answering anyway. Piper loads a 60 MB
+#: model per utterance, so this is generous on purpose.
+PREVIEW_TIMEOUT_S = 30.0
+
 #: How often to read the office for the ambient mood. The bridge polled at its
 #: own interval; this is the same job, and the office caps its own cost rather
 #: than relying on us to. Slow on purpose: an approval that shows up on his ring
@@ -417,8 +478,43 @@ async def _read_office(client) -> "office_mod.OfficeState | None":
 OFFICE_POLL_S = 15.0
 
 
-async def poll_office_mood(client, character, interval_s: float = OFFICE_POLL_S) -> None:
-    """Keep his resting face and ring reflecting the office.
+async def preview_once(conversation, settings) -> tuple[bool, str, bool]:
+    """Say the sample line, holding the same lock a conversation turn holds.
+
+    Module level rather than a closure inside `run_once` so it can be tested:
+    while it lived in the closure, reverting it to a read-only `busy` CHECK --
+    the bug it was written to fix -- broke no test at all.
+
+    TAKE the flag, do not merely read it. The first version checked `busy` and
+    left it alone, so a tap could start a turn while the preview was
+    mid-sentence: a refusal in one direction only, which is not a lock. Two
+    producers streaming into the same capture endpoint is exactly the collision
+    the check was added to prevent, and reading without taking also let two
+    previews overlap each other.
+
+    Returns (spoke, detail, was_busy). The third is what keeps "he is talking"
+    (409) apart from "the voice broke" (500), which must not be conflated: one
+    is a state and the other is him being mute.
+    """
+    if conversation is None or not conversation.claim("preview"):
+        return False, "he is mid-conversation", True
+    try:
+        ok = await speak_line(PREVIEW_LINE, settings=settings)
+    finally:
+        conversation.release()
+    return ok, "spoke" if ok else "the voice failed; see the log", False
+
+
+async def poll_office_mood(
+    client, character, voice: "VoiceOverrides | None" = None,
+    interval_s: float = OFFICE_POLL_S,
+) -> None:
+    """Keep his resting face and ring -- and his voice -- following the office.
+
+    One poll carrying two concerns, which is a conflation worth being explicit
+    about: they are the same GET of the same payload at the same cadence, and
+    splitting them would mean two requests fifteen seconds apart asking the
+    office the same question.
 
     Failure is a reading, not an error: `_read_office` returning None becomes
     the `offline` mood -- amber and a thinking face -- because "I cannot see
@@ -428,7 +524,10 @@ async def poll_office_mood(client, character, interval_s: float = OFFICE_POLL_S)
     """
     while True:
         try:
-            character.set_office_mood(await _read_office(client))
+            state = await _read_office(client)
+            character.set_office_mood(state)
+            if voice is not None:
+                voice.take(state.voice if state is not None else None)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a bad poll must not end the loop
@@ -501,6 +600,10 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
             character.set_status(driver_mod.STANDBY)
             logger.info("character stack running (idle level %d)", idle_level)
 
+            # What the office is asking the voice to sound like. Built before
+            # the conversation, because its `say` closes over this.
+            voice = VoiceOverrides()
+
             # --- the brain, when there is a key for it ---------------------
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
             conversation = None
@@ -518,7 +621,7 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     character=character,
                     brain=thinker,
                     listen=lambda ms: listen_once(session, ms),
-                    say=speak_line,
+                    say=lambda text: speak_line(text, settings=voice.current),
                     read_office=lambda: _read_office(office_client),
                     listen_ms=int(os.environ.get(
                         "CUBIE_LISTEN_MS", conversation_mod.DEFAULT_LISTEN_MS)),
@@ -583,6 +686,33 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     return
                 await conversation.turn_on_transcript(heard, time.monotonic() - start)
 
+            def on_preview(settings) -> tuple[bool, str]:
+                """Say a sample line. Called on the RECEIVER's thread.
+
+                The busy check happens inside the coroutine, on the loop
+                thread, rather than out here: reading `conversation.busy` from
+                this thread and then speaking would leave a window where a turn
+                starts in between, and two producers streaming into the same
+                capture endpoint is the collision this refusal exists to avoid.
+                """
+                try:
+                    # Inside the try: a loop that is shutting down makes THIS
+                    # raise, not `result()`, and an uncaught exception on the
+                    # server thread answers the office with a closed connection
+                    # rather than a reason.
+                    future = asyncio.run_coroutine_threadsafe(
+                        preview_once(conversation, settings), loop)
+                    return future.result(timeout=PREVIEW_TIMEOUT_S)
+                except TimeoutError:
+                    # The utterance may still be in flight; we just stop
+                    # waiting. Saying "timed out" is honest about what we know,
+                    # and it is not a "busy" answer -- the lock is still held by
+                    # the preview itself and will be released when it finishes.
+                    return False, f"no answer within {PREVIEW_TIMEOUT_S:.0f}s", False
+                except Exception as exc:  # noqa: BLE001 - a preview is not worth a crash
+                    logger.warning("preview raised: %r", exc)
+                    return False, "the preview failed; see the log", False
+
             def on_capture(capture: hook_mod.Capture) -> None:
                 """Called from the receiver's thread; must not block.
 
@@ -625,6 +755,7 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     receiver = hook_mod.HookReceiver(
                         hook_token,
                         on_capture,
+                        on_preview=on_preview if conversation is not None else None,
                         host=os.environ.get("CUBIE_HOOK_HOST", hook_mod.DEFAULT_HOST),
                         port=int(os.environ.get("CUBIE_HOOK_PORT", hook_mod.DEFAULT_PORT)),
                     )
@@ -643,7 +774,7 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
             # and a mood poll on its own would be a robot reacting to news it
             # cannot discuss.
             mood_poll = (
-                asyncio.create_task(poll_office_mood(office_client, character))
+                asyncio.create_task(poll_office_mood(office_client, character, voice))
                 if conversation is not None
                 else None
             )

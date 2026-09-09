@@ -108,6 +108,23 @@ class OfficeState:
     #: found nobody. Collapsing the two would make a dead sensor
     #: indistinguishable from an empty room.
     present: bool | None = None
+    #: ⚠️ NOT YET IN THE CONTRACT, and deliberately so. `contract/
+    #: companion-status.json` records the shape the office ACTUALLY SERVES, and
+    #: the guard fails on drift in either direction -- so listing `voice` there
+    #: before the office emits it would turn the bar red for a field nobody
+    #: sends. The office-side half of the panel adds both in one change.
+    #:
+    #: Until then this parses a field that never arrives, which is harmless
+    #: (None means "no opinion") and is written down here because reading
+    #: `office.py` alone would otherwise suggest the office already sends it.
+    #:
+    #: Voice overrides set from the office's control panel, raw. Left as the
+    #: payload's own dict rather than parsed here, because `voice_settings`
+    #: owns the coercion and this module has no business deciding what a legal
+    #: ring-modulation depth is. `None` means the office said nothing about the
+    #: voice, which is not the same as saying "use no overrides" -- an office
+    #: too old to know about the panel must not silently reset the voice.
+    voice: dict | None = None
 
     @property
     def approvals_truncated(self) -> int:
@@ -187,6 +204,7 @@ def parse_office_state(body: Any) -> OfficeState | None:
         tasks.append(FounderTask(ident, title, status))
 
     present = body.get("present")
+    raw_voice = body.get("voice")
     return OfficeState(
         pending_approvals=tuple(approvals),
         pending_total=pending_total,
@@ -197,6 +215,7 @@ def parse_office_state(body: Any) -> OfficeState | None:
         mood=mood,
         ts=ts,
         present=present if isinstance(present, bool) else None,
+        voice=raw_voice if isinstance(raw_voice, dict) else None,
     )
 
 
