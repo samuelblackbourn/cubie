@@ -82,7 +82,8 @@ class BreathModifier(Modifier):
             self._last_update = now - self.update_interval_s
         if self.duration_s is not None and now - self._start >= self.duration_s:
             self._apply(chan, 0)
-            self.request_destroy()
+            chan.reassert_face()
+        self.request_destroy()
             return
         if now - self._last_update < self.update_interval_s:
             return
@@ -625,5 +626,4 @@ class DanceModifier(Modifier):
             feature = chan.face.feature(name)
             feature.weight = None
             feature.size = None
-        chan.reassert_face()
         self.request_destroy()
