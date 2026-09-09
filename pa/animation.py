@@ -172,8 +172,9 @@ SEQUENCES = {
 # REST_PITCH 45, so pitch offsets stay honest between -400 and +400. Yaw is
 # `clamp(units/10, -90, 90)`, so -900..+900. Past those the clamp does not
 # reject the pose, it QUIETLY SHORTENS IT -- the gesture still plays and just
-# stops looking like itself. Everything below sits inside a third of the
-# envelope, because a nod does not need 40 degrees.
+# stops looking like itself. Nothing below uses more than 15 of the 40 degrees
+# of pitch offset available, or 15 of the 90 degrees of yaw -- glance is the
+# widest at 15 degrees each way -- because a nod does not need 40.
 #
 # Higher pitch looks UP (M5's own "raise head" adds to pitch; our rest is 45 of
 # 5..85), so a nod's dip is NEGATIVE.
@@ -194,24 +195,37 @@ SEQUENCES = {
 # --- Every gesture opens with a settle, and it is not decoration ---
 #
 # These keyframes are ABSOLUTE poses, and a gesture fires while idle motion has
-# the head wherever it last looked -- `idle.py` reaches yaw +/-50 and pitch
-# 25..55. A nod's dip is "pitch 33"; from a head already at 25 that is a RISE.
-# The gesture does not merely start off-centre, it inverts.
+# the head wherever it last looked. A nod's dip is "pitch 33"; from a head
+# already lower than that, it is a RISE. The gesture does not merely start
+# off-centre, it inverts.
 #
-# So the first keyframe of each sequence goes to rest, and is given the time
-# and the speed to actually get there from the worst case: 50 degrees of yaw at
-# 150 dps needs 334 ms, so 400 ms at M5 speed 600 arrives with margin. The
-# alternative was relative keyframes, which is a different engine -- M5's are
-# absolute and so are ours.
+# So the first keyframe of each sequence goes to rest, with the time and speed
+# to get there from ANY pose the servos allow -- 90 degrees of yaw, since that
+# is the worst case, needing 200 dps to cover it in 500 ms.
 #
-# The cost is 400 ms of settle before the gesture proper, which is also roughly
+# The envelope is the SERVO RANGE, not some smaller idle envelope, and getting
+# that wrong is how the first version of this came to be 30 degrees short. It
+# claimed "idle.py reaches yaw +/-50 and pitch 25..55", which is what three of
+# idle's four actions do in isolation -- but `_small_observation` is RELATIVE
+# (`current.yaw + uniform(-15, 15)`), so the walk compounds and is bounded only
+# by the clamp. Simulated: 300 seeds x 500 actions reaches |yaw| 87.5 and pitch
+# 6.1..80.5. A settle sized for +/-50 arrives 37 degrees short of that, and a
+# nod from pitch 6 still inverts -- the exact bug the settle was added to fix,
+# surviving in the tail because the envelope was asserted rather than measured.
+#
+# The cost is 500 ms of settle before the gesture proper, which is also roughly
 # what a person does before nodding. `_settle` builds it so the number lives in
-# one place, and a test walks every gesture from the four worst starting poses.
+# one place, and a test walks every gesture from the corners of the servo range.
+#
+# The settle is exempt from the reversal budget, and has to be: reaching centre
+# from a stop IS a 90-degree move. It is also not the hazard -- that is about
+# abrupt REVERSALS and about driving INTO a stop, and the settle is one move in
+# one direction, away from the stops.
 
 #: How long the opening move gets, and how fast, to reach rest from anywhere
 #: the idle system can leave the head. See the note above.
-SETTLE_MS = 400
-SETTLE_SPEED = 600
+SETTLE_MS = 500
+SETTLE_SPEED = 800
 
 #: Eye weight for OPEN, and it is 100 rather than 0 -- the eyelid is a black
 #: square that slides OFF the eye as weight rises, so 0 covers it completely.
@@ -219,9 +233,10 @@ SETTLE_SPEED = 600
 #: `firmware/fix-eye-weight.sh` exists because the first port had this
 #: backwards and rendered both eyes shut, and the first draft of these gestures
 #: made the same mistake for the same reason: 0 reads as "nothing set" and is
-#: in fact "fully closed". Every one of M5's own keyframes uses 100, which is
-#: the tell. A nod with his eyes shut is not a subtle failure, but nothing in
-#: the code would have said so.
+#: in fact "fully closed". No keyframe of any M5 dance goes BELOW 50, and
+#: three of their four hold 100 throughout -- happy's squint at 50 is the only
+#: departure, and it is deliberate. That was the tell. A nod with his eyes shut
+#: is not a subtle failure, but nothing in the code would have said so.
 EYES_OPEN = 100
 
 #: Mouth weight for closed, where 0 genuinely does mean shut -- the mouth
@@ -248,8 +263,9 @@ NOD = (
 )
 
 #: No. Yaw only, 15 degrees each way, three crossings and back to centre. The
-#: widest single move is 30 degrees, half the 60 that upstream's known-issues
-#: list warns can hang the servo bus on an abrupt reversal -- and yaw is the
+#: widest single move is 30 degrees, a quarter of upstream's +60-to-60 example
+#: of a reversal that can hang the servo bus (their figure is an endpoint, so
+#: the reversal is 120 degrees, not 60) -- and yaw is the
 #: axis with NO stall protection in M5's HAL, so a wide fast reversal there
 #: stalls against the mechanical stop undetected. See `MAX_GESTURE_TRAVEL_DEG`
 #: in the tests for the mechanism; of every number in this file, this is the

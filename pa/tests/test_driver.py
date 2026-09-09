@@ -423,20 +423,57 @@ def test_an_interrupted_gesture_is_not_left_in_the_pool():
     assert sum(isinstance(m, modifiers.DanceModifier) for m in d.chan.modifiers) == 1
 
 
-def test_a_gesture_survives_a_head_left_anywhere_idle_motion_could_leave_it():
-    """The animation tests check the arithmetic; this checks it end to end
-    through the driver, from a head deliberately parked at the far corner of
-    the idle envelope."""
-    from tracking import REST_PITCH, REST_YAW
+def test_a_gesture_commands_rest_first_however_far_off_it_starts():
+    """What the settle actually buys, asserted at the level that can see it.
+
+    Two earlier versions of this test were vacuous and it is worth recording
+    why, because the second one LOOKED rigorous. The first asserted the head
+    ended at rest -- true with the settle deleted, since the last keyframe
+    commands rest either way. The second watched the deepest pitch reached and
+    asserted the nod dipped below rest -- also true with the settle deleted,
+    because it reads `motion.target`, which jumps straight to whatever the
+    keyframe says.
+
+    The host does not model servo travel at all: `move_with_speed` sets `pose`
+    and `target` together and `moving_until` is only an estimate. So no
+    driver-level test can observe the head ARRIVING anywhere, and any test
+    written as though it can is measuring nothing.
+
+    What is observable is the first pose the gesture commands. With the settle
+    that is rest; without it, it is the nod's dip -- which from a head parked
+    low is a rise, and is the whole defect. That distinction this can see."""
+    from tracking import PITCH_MIN, REST_PITCH, REST_YAW, YAW_MAX
 
     d = fresh(level=0)
-    d.chan.motion.move_with_speed(50.0, 25.0, 60, 0.0)
-    run_for(d, 2.0)
+    d.chan.motion.move_with_speed(YAW_MAX, PITCH_MIN, 240, 0.0)
+    assert d.chan.motion.target.pitch == PITCH_MIN
+
     d.gesture("nod")
+    d.update(0.0)          # one tick: the first keyframe and no more
+    assert d.chan.motion.target.yaw == REST_YAW, "the gesture did not centre first"
+    assert d.chan.motion.target.pitch == REST_PITCH, (
+        f"the gesture's first command was pitch {d.chan.motion.target.pitch}, "
+        f"not rest -- from a head at {PITCH_MIN} that is a rise, not a nod"
+    )
+
+
+def test_a_finished_gesture_lets_the_device_have_its_face_back():
+    """`weight = None` stops US driving the axis; it does not tell the BOARD to
+    let go. The board holds each override until an expression change drops
+    them, and the flush only sends `set_avatar` when the name changed -- so a
+    gesture ending on the same face left the eyelids pinned where its last
+    keyframe put them, flattening every expression to one eyelid position until
+    the face happened to change. That is the defect `fix-eye-weight.sh` already
+    fixed once."""
+    d = fresh()
+    d.chan.flush()
+    d.gesture("laugh")
     run_for(d, 3.0)
-    assert d.performance is None
-    assert d.chan.motion.target.yaw == REST_YAW
-    assert d.chan.motion.target.pitch == REST_PITCH
+    names = d.chan.effector.names()
+    assert "set_avatar" in names[-6:], (
+        "the face was not re-asserted, so the overrides are still live "
+        f"on the device (last calls: {names[-6:]})"
+    )
 
 
 def test_a_misspelled_sequence_name_does_not_freeze_him():

@@ -337,6 +337,26 @@ class Chan:
         self._modifiers.append(modifier)
         return modifier
 
+    def reassert_face(self) -> None:
+        """Make the next flush re-send the face, whether or not it changed.
+
+        The only way to RELEASE a feature override. The board holds each
+        override beside `current_face_index_` and drops the lot on an
+        expression change -- `apply-m5-expression.sh` clears
+        `feature_override_` inside `SetAvatarExpressionLocked` precisely so
+        that every caller gets it, including the touch reactions. But the flush
+        only sends `set_avatar` when the NAME changed, so a sequence that ends
+        on the same face leaves its overrides live on the device with nothing
+        host-side able to take them back: `weight = None` means "we have
+        stopped driving it", not "let go of it".
+
+        Left alone, that pins the eyelids where the last keyframe put them and
+        flattens every expression to one eyelid position until the face happens
+        to change -- which is the exact defect `firmware/fix-eye-weight.sh`
+        exists to have fixed once already.
+        """
+        self._sent_face_name = None
+
     def remove(self, modifier: Modifier | None) -> bool:
         if modifier is None or modifier not in self._modifiers:
             return False
