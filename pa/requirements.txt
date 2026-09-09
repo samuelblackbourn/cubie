@@ -11,3 +11,10 @@ piper-tts>=1.2
 
 # Testing only.
 pytest>=8.0
+
+# The green bar's linter, and only that. Chosen over ruff or flake8 because it
+# answers exactly one question -- is any name here undefined or unused -- with
+# no style opinions to configure, argue about, or silence. Five stale imports
+# had accumulated before it was a gate, including two that survived a file
+# being rewritten around them.
+pyflakes>=3.0

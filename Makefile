@@ -1,8 +1,19 @@
 PYTHON ?= python3
-VO_REPO ?= /workspace/virtual-office
 
-.PHONY: help check check-contract check-bridge check-pa check-idempotent \
-        check-gateway check-config gateway-tools bridge-install pa-install
+# Where the office's checkout lives ON OFFICE-SERVER, which is the machine that
+# matters -- this used to default to a sandbox path (/workspace/virtual-office),
+# so the default was wrong everywhere the bar is actually run. Override it for a
+# checkout somewhere else:
+#
+#   VO_REPO=/path/to/virtual-office make check
+#
+# The guard refuses a checkout behind its remote (exit 2), so a forgotten clone
+# now reports itself instead of passing quietly.
+VO_REPO ?= $(HOME)/virtual-office
+
+.PHONY: help check check-contract check-lint check-bridge check-pa \
+        check-idempotent check-gateway check-config gateway-tools bridge-install \
+        pa-install
 
 help:
 	@echo "check           the green bar (no CI by design, same as the sibling repos)"
@@ -10,6 +21,7 @@ help:
 	@echo "check-bridge    typecheck + test the bridge"
 	@echo "check-idempotent  prove the firmware patch chain converges (clones, ~minutes)"
 	@echo "check-pa        typecheck-free unit tests for the PA service"
+	@echo "check-lint      fail on an undefined or unused name in any .py here"
 	@echo "check-gateway   fail if the gateway cannot route the tools pa/ calls"
 	@echo "check-config    prove the sdkconfig patcher keeps one option per choice"
 	@echo "gateway-tools   teach the installed gateway this fleet's display tools"
@@ -57,6 +69,24 @@ check-pa:
 	  echo "pa/.venv not found -- run 'make pa-install' first"; exit 2; }
 	pa/.venv/bin/pytest pa/tests -q
 
+# Undefined and unused names, across every Python file in the repo -- not just
+# pa/. Deliberately NOT a style check: pyflakes answers one question and has
+# nothing to configure, so there is nothing here to argue about or silence.
+#
+# It earns its place on evidence rather than principle. Two real defects in
+# this repo were of exactly this shape: `Pose` and `Any` used in annotations
+# that were never imported (harmless under PEP 563, but `get_type_hints`
+# raises), and five stale imports that accumulated while it was not a gate.
+check-lint:
+	@test -x pa/.venv/bin/python || { \
+	  echo "pa/.venv not found -- run 'make pa-install' first"; exit 2; }
+	@pa/.venv/bin/python -m pyflakes --version >/dev/null 2>&1 || { \
+	  echo "pyflakes not installed -- run 'make pa-install' to refresh pa/.venv"; \
+	  exit 2; }
+	pa/.venv/bin/python -m pyflakes \
+	  pa/*.py pa/tests/*.py tools/*.py scripts/*.py firmware/*.py
+	@echo "PASS -- no undefined or unused names"
+
 # NOT part of `check`: it needs a gateway installed, which a dev machine has no
 # reason to have. Run it on office-server after touching pa/live.py's tool set
 # or bumping the gateway pin. It catches the failure that cost a round on
@@ -82,7 +112,7 @@ gateway-tools:
 check-config:
 	$(PYTHON) firmware/check-config-choices.py
 
-check: check-contract check-bridge check-pa check-config
+check: check-contract check-lint check-bridge check-pa check-config
 
 # NOT part of `check`: it clones two repositories. Run it after touching
 # anything in firmware/*.sh. It catches a failure mode that is otherwise

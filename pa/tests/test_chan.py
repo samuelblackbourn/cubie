@@ -13,8 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import chan as chan_mod  # noqa: E402
-from chan import LEFT_EYE, MOUTH, RIGHT_EYE, Chan, Modifier, RecordingEffector  # noqa: E402
+from chan import LEFT_EYE, RIGHT_EYE, Chan, Modifier, RecordingEffector  # noqa: E402
 
 
 def fresh() -> Chan:

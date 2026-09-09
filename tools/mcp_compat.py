@@ -24,6 +24,13 @@ gateway's virtualenv, not the system python.
 
 import contextlib
 
+#: `ClientSession` is re-exported, not used here -- three callers import it
+#: from this module precisely so they have one place that knows how to find it
+#: (firmware/face-check.py, pa/live.py, tools/cubie-call.py). `__all__` is what
+#: says that to a linter; the `X as X` idiom below only counts inside a
+#: package's __init__.
+__all__ = ["ClientSession", "auth_headers", "open_streams", "tool_failed"]
+
 try:
     import mcp.client.streamable_http as transport_module
     from mcp import ClientSession as ClientSession  # re-exported for callers

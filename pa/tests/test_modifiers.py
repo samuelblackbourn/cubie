@@ -13,9 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import animation  # noqa: E402
 import modifiers  # noqa: E402
-from chan import LEFT_EYE, MOUTH, RIGHT_EYE, Chan, RecordingEffector  # noqa: E402
+from chan import Chan, RecordingEffector  # noqa: E402
 from tracking import PITCH_MAX, PITCH_MIN, YAW_MAX, YAW_MIN  # noqa: E402
 
 
