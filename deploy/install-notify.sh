@@ -99,8 +99,29 @@ for pair in "STACKCHAN_NOTIFY_CONFIG=$CONFIG_PATH" "STACKCHAN_EVENTS_PATH=$EVENT
   fi
 done
 
+# The character stack has to TAIL the same file the gateway WRITES. Its own
+# default matches EVENTS_PATH above, but only while both stay in step -- so
+# when they can be pinned they are, rather than relying on two defaults
+# agreeing. A gateway writing events nobody tails looks exactly like a device
+# that is not reporting, which is the failure this script exists to remove.
+CHARACTER_ENV="${CHARACTER_ENV:-/etc/cubie-character.env}"
+if [ -f "$CHARACTER_ENV" ]; then
+  if sudo grep -qE "^STACKCHAN_EVENTS_PATH=" "$CHARACTER_ENV"; then
+    echo "  = STACKCHAN_EVENTS_PATH already set in $(basename "$CHARACTER_ENV")"
+  else
+    printf 'STACKCHAN_EVENTS_PATH=%s\n' "$EVENTS_PATH" | sudo tee -a "$CHARACTER_ENV" >/dev/null
+    echo "  + STACKCHAN_EVENTS_PATH in $(basename "$CHARACTER_ENV")"
+  fi
+  RESTART_CHARACTER=yes
+else
+  echo "  . $CHARACTER_ENV not present, so the character stack is not installed"
+  echo "    yet -- its default already matches $EVENTS_PATH"
+  RESTART_CHARACTER=no
+fi
+
 echo
 echo "Done. Now:"
 echo "  sudo systemctl restart $UNIT"
+[ "$RESTART_CHARACTER" = yes ] && echo "  sudo systemctl restart cubie-character"
 echo "then stroke his head and check:"
 echo "  tail -3 $EVENTS_PATH"

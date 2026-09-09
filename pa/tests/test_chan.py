@@ -392,3 +392,33 @@ def test_a_failed_listen_is_a_quiet_turn_not_a_crash():
             raise ConnectionResetError("gateway went away")
 
     assert asyncio.run(live.listen_once(Broken(), 5000)) is None
+
+
+def test_the_event_log_path_matches_what_the_installer_configures():
+    """The gateway WRITES this file and the character stack TAILS it. When the
+    two disagree, events land in a file nobody reads -- which looks exactly
+    like a device that is not reporting, and is the failure
+    deploy/install-notify.sh exists to remove. It would be a silent one, so it
+    is asserted rather than trusted to two defaults staying in step."""
+    import re
+
+    import live
+
+    installer = (
+        Path(live.__file__).resolve().parent.parent / "deploy" / "install-notify.sh"
+    ).read_text()
+    match = re.search(r'^EVENTS_PATH="\$\{EVENTS_PATH:-([^}]+)\}"', installer, re.M)
+    assert match, "could not find EVENTS_PATH in install-notify.sh"
+    assert str(live.DEFAULT_EVENT_LOG) == match.group(1)
+
+
+def test_the_installer_also_pins_the_path_for_the_character_service():
+    """Matching defaults are not enough on their own: the gateway's path is
+    configurable, so when it is set explicitly the tailing end must be told."""
+    import live
+
+    installer = (
+        Path(live.__file__).resolve().parent.parent / "deploy" / "install-notify.sh"
+    ).read_text()
+    assert "cubie-character.env" in installer
+    assert installer.count("STACKCHAN_EVENTS_PATH") >= 2

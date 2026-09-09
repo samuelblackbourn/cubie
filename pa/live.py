@@ -56,15 +56,24 @@ logger = logging.getLogger("cubie.live")
 #: The gateway's loopback MCP surface. Same default as the bridge's.
 DEFAULT_MCP_URL = "http://127.0.0.1:8767/mcp"
 
-#: Where the gateway appends physical events: `event_log.py`'s
-#: `~/.claude/stackchan-events.jsonl`, resolved against the gateway's HOME,
-#: which the systemd drop-in sets to its StateDirectory.
+#: Where the gateway appends physical events.
+#:
+#: MUST MATCH `EVENTS_PATH` in deploy/install-notify.sh, which is what sets
+#: the gateway's `STACKCHAN_EVENTS_PATH`. A test asserts the two agree,
+#: because when they disagree the gateway writes events nobody tails -- which
+#: looks exactly like a device that is not reporting, and is the failure that
+#: script exists to remove.
+#:
+#: An explicit path rather than the gateway's default of
+#: `~/.claude/stackchan-events.jsonl`: that resolves against the gateway's
+#: HOME, which is whatever its unit drop-in says, and guessing it wrong is
+#: silent at both ends.
 #:
 #: **This log is OFF by default.** `notify_config.py` defaults `jsonl.enabled`
 #: to false, so touch events reach nothing until a `notify.yml` turns it on --
 #: see `deploy/stackchan-notify.yml` and the README. Head-pet is wired and
 #: dormant until then, which is a config step and not a code one.
-DEFAULT_EVENT_LOG = Path("/var/lib/stackchan-gateway/.claude/stackchan-events.jsonl")
+DEFAULT_EVENT_LOG = Path("/var/lib/cubie/stackchan-events.jsonl")
 
 #: 10 Hz. Fast enough for breath's 600 ms and blink's 200 ms, slow enough to be
 #: free.
