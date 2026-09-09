@@ -31,7 +31,17 @@ channels:
   enabled: false
 jsonl:
   enabled: true
-  path: ~/.claude/stackchan-events.jsonl
+  # Absolute, and the same path deploy/install-notify.sh sets in
+  # STACKCHAN_EVENTS_PATH. The env var wins over this key -- checked against
+  # the gateway's own `_resolve_jsonl_path`, which reads the environment
+  # first and this key only as a fallback -- so the two must not disagree.
+  # The upstream default here is `~/.claude/stackchan-events.jsonl`, resolved
+  # against the GATEWAY's home; leaving that in place left a config file whose
+  # plain reading contradicted the deployed truth, and it would become the
+  # truth the moment the env var went missing. That is the silent
+  # events-land-in-a-file-nobody-reads failure install-notify.sh exists to
+  # remove, so it is not left lying around here.
+  path: /var/lib/cubie/stackchan-events.jsonl
 
 # The default wording is left alone deliberately. `pa/live.py` reads
 # `event_type` and `subtype`, not the rendered text, so changing the templates
