@@ -307,3 +307,196 @@ def test_a_brain_failure_on_a_delivered_turn_still_speaks_and_returns_to_standby
     assert spoken == [conv.BRAIN_UNREACHABLE]
     assert result.spoken == conv.BRAIN_UNREACHABLE
     assert character.statuses[-1] == driver_mod.STANDBY
+
+
+# --- the voice the office asked for -----------------------------------------
+
+
+def test_the_overrides_the_office_set_reach_the_voices_command_line():
+    """End to end through `speak_line`, by intercepting the subprocess.
+
+    The first version of this only poked `VoiceOverrides` and asserted its own
+    `flags()` -- so the entire wiring in `live.py` could have been deleted with
+    the suite green. What matters is that the flags land on the argv of the
+    process that actually speaks."""
+    import asyncio
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    import live
+    import voice_settings
+
+    seen = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*argv, **kwargs):
+        seen["argv"] = argv
+        return FakeProcess()
+
+    voice = live.VoiceOverrides()
+    voice.take({"pitch": 1.4, "robot": 0.2})
+
+    original = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = fake_exec
+    try:
+        # Exactly how run_once wires it: the closure reads `current` at speak
+        # time, not when it was built.
+        say = lambda text: live.speak_line(text, settings=voice.current)  # noqa: E731
+        assert asyncio.run(say("hello")) is True
+    finally:
+        asyncio.create_subprocess_exec = original
+
+    argv = [str(a) for a in seen["argv"]]
+    assert "--pitch" in argv and argv[argv.index("--pitch") + 1] == "1.4"
+    assert "--robot" in argv and argv[argv.index("--robot") + 1] == "0.2"
+    assert argv[-1] == "hello", "the text must be last, after the flags"
+    assert "--variation" not in argv, "an unset override must not be sent"
+    assert voice_settings  # names what built those flags
+
+
+def test_a_later_poll_with_no_opinion_does_not_reset_the_voice():
+    """`None` means the office said nothing. An office too old to know about
+    the panel must not silently change how he sounds."""
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    import live
+
+    voice = live.VoiceOverrides()
+    voice.take({"pitch": 1.4})
+    voice.take(None)
+    assert voice.current.pitch == 1.4
+
+
+def test_a_poll_with_an_opinion_replaces_the_whole_set():
+    """So a slider returned to its default clears that override rather than
+    leaving it stuck at the last non-default value."""
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    import live
+    import voice_settings
+
+    voice = live.VoiceOverrides()
+    voice.take({"pitch": 1.4, "robot": 0.2})
+    voice.take({"pitch": 1.1})
+    assert voice.current == voice_settings.VoiceSettings(pitch=1.1)
+
+
+def test_a_preview_and_a_turn_contend_for_one_lock():
+    """The collision the preview's check exists to prevent, and which the first
+    version left open: it READ `busy` without taking it, so a tap could start a
+    turn while the preview was mid-sentence."""
+    conversation, _, spoken = build()
+
+    assert conversation.claim("preview") is True
+    assert conversation.busy is True
+    # A turn now finds it held, which is the half that already worked.
+    assert asyncio.run(conversation.turn()).skipped == "busy"
+    assert spoken == []
+    # And a second preview finds it held, which is the half that did not.
+    assert conversation.claim("preview") is False
+
+    conversation.release()
+    assert conversation.claim("preview") is True
+
+
+def test_a_turn_holds_the_lock_against_a_preview():
+    """The other direction, which is what makes it a lock rather than a
+    courtesy."""
+    conversation, _, _ = build()
+    conversation.busy = True
+    assert conversation.claim("preview") is False
+
+
+def test_preview_once_holds_the_lock_while_it_speaks():
+    """The wiring, not just `Conversation.claim`. While this lived inside a
+    closure in `run_once`, reverting it to a read-only `busy` check -- the exact
+    bug it exists to fix -- broke no test at all."""
+    import asyncio
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    import live
+    import voice_settings
+
+    conversation, _, _ = build()
+    held = {}
+
+    async def fake_speak(text, character=None, settings=None):
+        held["busy_while_speaking"] = conversation.busy
+        held["text"] = text
+        held["settings"] = settings
+        return True
+
+    original = live.speak_line
+    live.speak_line = fake_speak
+    try:
+        ok, detail, busy = asyncio.run(
+            live.preview_once(conversation, voice_settings.VoiceSettings(pitch=1.3))
+        )
+    finally:
+        live.speak_line = original
+
+    assert ok is True and busy is False and detail == "spoke"
+    assert held["busy_while_speaking"] is True, "the preview spoke without holding the lock"
+    assert held["settings"].pitch == 1.3
+    assert held["text"] == live.PREVIEW_LINE
+    assert conversation.busy is False, "the lock was not given back"
+
+
+def test_preview_once_refuses_and_reports_busy_separately_from_failure():
+    import asyncio
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    import live
+    import voice_settings
+
+    conversation, _, _ = build()
+    conversation.busy = True
+    ok, detail, busy = asyncio.run(
+        live.preview_once(conversation, voice_settings.VoiceSettings())
+    )
+    assert (ok, busy) == (False, True)
+    assert "mid-conversation" in detail
+
+
+def test_preview_once_reports_a_voice_failure_as_a_failure_not_as_busy():
+    """The distinction that keeps the panel from saying "he is busy" when he is
+    mute."""
+    import asyncio
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    import live
+    import voice_settings
+
+    conversation, _, _ = build()
+
+    async def fake_speak(text, character=None, settings=None):
+        return False
+
+    original = live.speak_line
+    live.speak_line = fake_speak
+    try:
+        ok, detail, busy = asyncio.run(
+            live.preview_once(conversation, voice_settings.VoiceSettings())
+        )
+    finally:
+        live.speak_line = original
+
+    assert (ok, busy) == (False, False), "a broken voice is not a busy robot"
+    assert "voice failed" in detail
+    assert conversation.busy is False, "the lock was not given back after a failure"
