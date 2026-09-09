@@ -235,6 +235,10 @@ class CharacterDriver:
             # conversation has finished with them. Only here: while listening or
             # speaking the status owns both, and a mood asserting itself
             # mid-answer would be two things driving one axis.
+            # After the sleep flag is cleared below, not before: both of these
+            # return early on `sleeping`, so running them first meant waking up
+            # dropped the held mood AND the glance it was owed.
+            self._wake_from_sleep_if_needed()
             self._apply_office_mood()
             # And the glance he could not take while he was talking.
             self._glance_if_unnoticed()
@@ -244,7 +248,12 @@ class CharacterDriver:
         else:
             self._stop_idle()
 
-        # M5 clears the sleep bubble on any status change.
+        # M5 clears the sleep bubble on any status change. For the idle branch
+        # this has already run, above -- see `_wake_from_sleep_if_needed`.
+        self._wake_from_sleep_if_needed()
+
+    def _wake_from_sleep_if_needed(self) -> None:
+        """M5 clears the sleep bubble on any status change."""
         if self.sleeping:
             self.chan.face.speech = ""
             self.sleeping = False
@@ -331,7 +340,12 @@ class CharacterDriver:
         # already ATTENTION, so every later poll failed the transition test and
         # the glance never happened at all. Something arrived and he never
         # noticed, which is the one thing this gesture exists to prevent.
-        if mood.reason != mood_mod.ATTENTION:
+        # Cleared only by a reading that positively says nothing is waiting.
+        # `!= ATTENTION` was wrong because OFFLINE is what an unreadable office
+        # produces, and that is the absence of information rather than the
+        # absence of approvals: one failed poll would clear the latch and he
+        # would glance again at the very same thing on the next good one.
+        if mood.reason in (mood_mod.RESTING, mood_mod.BUSY, mood_mod.REVIEW):
             self.glanced_for_attention = False
 
         if self.status == STANDBY:

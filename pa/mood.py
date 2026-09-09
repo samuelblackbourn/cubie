@@ -20,9 +20,11 @@ anyway; a person notices a MOVEMENT. So that intent is a one-shot gesture on
 entering the mood rather than a posture: `animation.GLANCE`, fired from
 `CharacterDriver.set_office_mood`.
 
-On the TRANSITION into `attention`, and only while STANDBY. Firing whenever the
-mood is still `attention` would glance every fifteen seconds for as long as an
-approval went unanswered, which is nagging rather than noticing.
+Once per waiting EPISODE, at the first moment he is standing by. Firing per
+poll would glance every fifteen seconds for as long as an approval went
+unanswered, which is nagging rather than noticing; firing only on the poll that
+carries the transition lost the case that matters most, an approval arriving
+while he was mid-answer -- see `CharacterDriver._glance_if_unnoticed`.
 
 --- What it owns, and when ---
 

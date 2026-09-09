@@ -576,9 +576,9 @@ class DanceModifier(Modifier):
 
         Both kinds run through this one class because they need the same two
         things: the keyframe machinery, and blink suspended while the sequence
-        drives eye weight. A 400 ms nod does not care about the suspension --
-        you would not notice a blink it skipped -- and the laugh needs it, so
-        one implementation serves both.
+        drives eye weight. A nod does not care about the suspension -- it runs
+        1.5 s and you would not notice a blink it skipped -- while the laugh
+        squints deliberately and needs it, so one implementation serves both.
         """
         return cls(animation.lookup(name), loop)
 
@@ -615,8 +615,15 @@ class DanceModifier(Modifier):
             chan.face.blink_enabled = self._blink_was
         # Release the axes the dance was driving, so the face goes back to
         # whatever the expression and the firmware say it should be.
+        #
+        # Both halves are needed and they do different things. Setting these to
+        # None stops US driving them, so the flush stops sending them. It does
+        # NOT tell the device to let go -- the board keeps every override it was
+        # given until an expression change drops them. So the face is re-asserted
+        # too, which is what actually clears them.
         for name in (LEFT_EYE, RIGHT_EYE, MOUTH):
             feature = chan.face.feature(name)
             feature.weight = None
             feature.size = None
+        chan.reassert_face()
         self.request_destroy()

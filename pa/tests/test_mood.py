@@ -205,11 +205,20 @@ def test_every_led_channel_is_one_the_device_will_take():
 # mood was a held pose. A person notices movement, not an attitude.
 
 
-def gesture_running(character):
+def gesture_running(character, expected="glance"):
+    """The GLANCE specifically, not "some DanceModifier".
+
+    The first version returned any dance in the pool, so every test in this
+    section would have passed if the office had fired a panic dance -- or M5's
+    seven-second look-around -- instead of the glance. `lookup` makes any dance
+    name a valid argument to `gesture`, so nothing else pinned it.
+    """
+    import animation
     import modifiers
 
     return [m for m in character.chan.modifiers
-            if isinstance(m, modifiers.DanceModifier)]
+            if isinstance(m, modifiers.DanceModifier)
+            and m.sequence is animation.GESTURES[expected]]
 
 
 def test_entering_attention_makes_him_look_up_and_come_back():
@@ -336,3 +345,39 @@ def test_he_does_not_glance_in_his_sleep():
     character.set_emotion("sleepy")
     character.set_office_mood(state(needsYou=True))
     assert not gesture_running(character)
+
+
+def test_one_unreadable_poll_does_not_make_him_glance_again():
+    """`offline` is the absence of information, not the absence of approvals.
+    Clearing the latch on anything that is not `attention` treated a failed
+    poll as proof that nothing was waiting, so a single blip made him glance
+    again at the very same thing on the next good reading."""
+    character, _ = build()
+    character.set_status(driver_mod.STANDBY)
+    character.set_office_mood(state(needsYou=True))
+    now = 0.0
+    while now < 3.0:
+        character.update(now)
+        now += 0.05
+    assert not gesture_running(character)
+
+    character.set_office_mood(None)               # the office went quiet
+    assert character.glanced_for_attention, "a failed poll cleared the latch"
+    character.set_office_mood(state(needsYou=True))
+    assert not gesture_running(character), "he glanced again at the same thing"
+
+
+def test_waking_up_does_not_drop_the_glance_he_was_owed():
+    """`set_status` used to clear `sleeping` AFTER calling the two things that
+    check it, so waking to standby lost both the held mood and its glance."""
+    character, chan = build()
+    character.set_status(driver_mod.STANDBY)
+    character.set_emotion("sleepy")
+    assert character.sleeping is True
+    character.set_office_mood(state(needsYou=True))
+    assert not gesture_running(character), "not while asleep"
+
+    character.set_status(driver_mod.STANDBY)      # the nudge that wakes him
+    assert character.sleeping is False
+    assert chan.face.face == "surprised", "the held mood was dropped"
+    assert gesture_running(character), "the glance he was owed was dropped"

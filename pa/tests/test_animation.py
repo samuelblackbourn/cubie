@@ -167,19 +167,31 @@ def test_an_empty_sequence_finishes_instead_of_hanging():
 # like the gesture.
 
 
-#: The corners of where the idle system can leave the head when a gesture
-#: fires. From idle.py: `_quick_glance` reaches yaw +/-50, and every action's
-#: pitch band together spans 25..55. A gesture starts from one of these, NOT
-#: from rest -- the first draft of these tests walked from rest and so proved
-#: nothing about the case that actually happens.
-IDLE_CORNERS = ((50.0, 25.0), (-50.0, 55.0), (50.0, 55.0), (-50.0, 25.0))
+#: The corners of where a gesture can find the head: the whole servo range.
+#:
+#: NOT a narrower "idle envelope". The first version of this said yaw +/-50 and
+#: pitch 25..55, taken from reading three of idle.py's four actions in
+#: isolation -- but `_small_observation` is RELATIVE (`current.yaw +
+#: uniform(-15, 15)`) so the walk compounds, bounded only by the clamp.
+#: Simulated over 300 seeds x 500 actions it reaches |yaw| 87.5 and pitch
+#: 6.1..80.5. Sizing the settle for +/-50 left it 37 degrees short, so a nod
+#: from a head idle had walked down to pitch 6 still inverted -- the exact bug
+#: the settle exists to fix, surviving in the tail because the envelope was
+#: asserted from a reading instead of measured.
+#:
+#: Using the servo range makes the guard independent of how idle behaves, which
+#: is the right coupling: a gesture has to work from wherever the head IS.
+START_CORNERS = (
+    (YAW_MAX, PITCH_MIN), (YAW_MIN, PITCH_MAX),
+    (YAW_MAX, PITCH_MAX), (YAW_MIN, PITCH_MIN),
+)
 
 
 def travel_of(sequence, start=None):
     """Per keyframe: (degrees the head must move, seconds it has, dps asked for).
 
     `start` is the pose the head is in when the sequence begins. Defaults to
-    rest; pass an IDLE_CORNERS entry for the case that matters.
+    rest; pass an START_CORNERS entry for the case that matters.
     """
     from tracking import REST_PITCH, REST_YAW
 
@@ -223,9 +235,9 @@ def test_no_gesture_nods_with_his_eyes_shut():
     gestures made the identical mistake for the identical reason: 0 reads as
     "nothing set" and means "closed".
 
-    Every one of M5's own keyframes uses 100, which is the tell nobody read.
-    A nod with his eyes shut is not a subtle failure -- and nothing in the code
-    would have said a word about it."""
+    No keyframe of any M5 dance goes below 50 and three of the four hold 100
+    throughout, which was the tell nobody read. A nod with his eyes shut is not
+    a subtle failure -- and nothing in the code would have said a word."""
     for name, sequence in animation.GESTURES.items():
         for i, keyframe in enumerate(sequence):
             for side, feature in (("left", keyframe.left_eye), ("right", keyframe.right_eye)):
@@ -252,6 +264,9 @@ def test_m5s_own_dances_agree_about_which_way_eye_weight_runs():
     weights = {kf.left_eye.weight for seq in animation.SEQUENCES.values() for kf in seq}
     assert min(weights) > 0, f"an M5 keyframe closes the eyes: {sorted(weights)}"
     assert animation.EYES_OPEN == max(weights)
+    # And 100 is not merely the maximum, it is the resting value: three of
+    # their four dances never leave it. Happy's 50 is a squint, not a default.
+    assert {kf.left_eye.weight for kf in animation.ROBOT} == {animation.EYES_OPEN}
 
 
 def test_no_sequence_is_quietly_shortened_by_the_clamp():
@@ -299,7 +314,7 @@ def test_every_gesture_arrives_from_wherever_idle_motion_left_the_head():
     M5's PANIC deliberately fails this same check and that is WHY it reads as
     frantic, so this covers gestures only; the exemption is asserted below."""
     for name, sequence in animation.GESTURES.items():
-        for start in IDLE_CORNERS:
+        for start in START_CORNERS:
             for i, (travel, seconds, dps) in enumerate(travel_of(sequence, start)):
                 needed = travel / seconds
                 assert dps >= needed, (
@@ -314,7 +329,7 @@ def test_the_settle_frame_is_what_makes_that_true():
     SETTLE_SPEED to make a gesture snappier, the test above is what stops it,
     and this is what explains why. The worst travel is yaw 50 -> 0."""
     worst_travel = max(
-        max(abs(0.0 - y), abs(45.0 - p)) for y, p in IDLE_CORNERS
+        max(abs(0.0 - y), abs(45.0 - p)) for y, p in START_CORNERS
     )
     reach = units.m5_speed_to_dps(animation.SETTLE_SPEED) * (animation.SETTLE_MS / 1000)
     assert reach >= worst_travel, (
@@ -324,16 +339,26 @@ def test_the_settle_frame_is_what_makes_that_true():
         assert sequence[0] == animation._settle(), f"{name} does not open with a settle"
 
 
-def test_m5s_panic_is_the_exception_that_proves_that_rule_is_ours():
-    """Not a defect in the port -- their sequence is unreachable on purpose, and
-    the test above would be wrong to apply here. Asserted so that the exemption
-    stays a fact about their dance rather than a sentence in a comment."""
-    unreachable = [
-        (i, travel, seconds, dps)
-        for i, (travel, seconds, dps) in enumerate(travel_of(animation.PANIC))
-        if dps < travel / seconds
-    ]
-    assert unreachable, "PANIC now arrives everywhere; the exemption is stale"
+def test_which_of_m5s_dances_cannot_arrive_and_which_can():
+    """Renamed, because the old name claimed more than the assertion did.
+
+    It was `test_m5s_panic_is_the_exception_that_proves_that_rule_is_ours` and
+    asserted only that PANIC has SOME unreachable frame -- not that it is the
+    only such dance, which is what the name and the comments in animation.py
+    both said. It is not the only one, so the claim is now stated as the fact it
+    is: this records which of their four can arrive and which cannot, and the
+    arrival rule covers gestures only because THEIRS is a mixed bag we did not
+    write and cannot fix without changing their choreography."""
+    unreachable = {
+        name: [i for i, (travel, seconds, dps) in enumerate(travel_of(sequence))
+               if seconds and dps < travel / seconds]
+        for name, sequence in animation.SEQUENCES.items()
+    }
+    assert unreachable["panic"], "PANIC now arrives everywhere; the note is stale"
+    # Recorded rather than judged: if the vendored pin moves and this changes,
+    # the comments in animation.py about whose fault the arrival rule is need
+    # re-reading.
+    assert set(unreachable) == set(animation.SEQUENCES)
 
 
 def test_every_gesture_ends_where_it_started():
@@ -352,8 +377,11 @@ def test_every_gesture_ends_where_it_started():
 
 def test_a_gesture_is_short_enough_to_be_punctuation():
     """The distinction from a dance is length, and it is the whole reason these
-    are a separate registry. M5's shortest dance is 2.6 s; a gesture that ran
-    that long would stop being a beat in a conversation."""
+    are a separate registry. Their dances run 1.1 s (panic), 2.7 s
+    (robot), 4.2 s (happy) and 7.5 s (look-around) -- so length alone does not
+    separate the two kinds, and panic is shorter than every gesture here. What
+    separates them is that a gesture is punctuation in the middle of something
+    else, and 2 s is the ceiling that keeps it that."""
     for name, sequence in animation.GESTURES.items():
         assert animation.duration_of(sequence) <= 2.0, (
             f"{name} runs {animation.duration_of(sequence):.1f}s"
@@ -388,10 +416,18 @@ def test_lookup_finds_both_kinds_and_names_everything_when_it_cannot():
 #: held that as MAX_YAW_TRAVEL = 60, bounding the DELTA rather than the
 #: magnitude; with the bridge gone this and `tracking.MAX_STEP_DEG` are the only
 #: surviving records, and `MAX_STEP_DEG` is enforced solely inside
-#: `step_toward` / `step_to_rest`, which have no production callers. So nothing
-#: in the live path bounds a reversal but this.
+#: `step_toward` / `step_to_rest`, which have no production callers.
 #:
-#: 30 is half of upstream's example: a budget, not a measurement. But the
+#: So NOTHING bounds a reversal at runtime, including this. It is a constant in
+#: a test module asserted over four static sequences -- it stops a reversal
+#: being WRITTEN, which is all a static check can do. An earlier version of this
+#: comment said "nothing in the live path bounds a reversal but this", which
+#: put a test in the live path.
+#:
+#: 30 is a QUARTER of upstream's example, not half: +60 to -60 is a 120-degree
+#: reversal, and the earlier comment here said "half the 60" by reading their
+#: number as a magnitude when it is an endpoint. A budget either way, not a
+#: measurement. But the
 #: MECHANISM behind it was read out of M5's servo HAL at the pinned commit
 #: rather than taken on trust, and it is worse than "the bus can hang":
 #:
@@ -407,9 +443,13 @@ def test_lookup_finds_both_kinds_and_names_everything_when_it_cannot():
 #:     quietly reduces the range of every gesture afterwards until reboot, and
 #:     says so only in a `tagWarn`.
 #:
-#: Which is why this is asserted for every gesture from every starting corner
-#: rather than trusted to good sense: the failure is silent, and on the yaw axis
-#: it is mechanical.
+#: Two caveats on that mechanism, because it is easy to over-read. Stalling
+#: needs the head to reach a STOP, and every gesture here stays within 15
+#: degrees of centre out of 90 -- so the stall risk is not what these numbers
+#: are near. What the travel budget bounds is the abrupt REVERSAL, which is the
+#: bus-hang half of the warning; the stall half is why the reversal budget is
+#: worth having on yaw specifically rather than being a tidiness rule, since
+#: that axis has nothing to catch it.
 MAX_GESTURE_TRAVEL_DEG = 30.0
 
 
@@ -419,18 +459,18 @@ def test_no_gesture_asks_for_a_reversal_the_servo_bus_might_hang_on():
     The first draft bounded `animation.SHAKE` specifically, so a new gesture
     called anything else could have commanded a 120-degree reversal and passed.
     A guard that names one instance of the thing it guards is not a guard."""
+    # No corner loop, deliberately. Every keyframe after the settle starts from
+    # rest whatever the head was doing before -- that is what the settle is for
+    # -- so iterating starting poses here changed nothing but the failure
+    # message. The first version looped over them and `continue`d on the only
+    # keyframe whose travel depends on the start, which made the loop
+    # decorative. A guard that looks thorough and is not is worse than a plain
+    # one.
     for name, sequence in animation.GESTURES.items():
-        for start in (None,) + IDLE_CORNERS:
-            # The settle frame is exempt and has to be: reaching rest from the
-            # far corner of the idle envelope IS a 50-degree move. It is also
-            # not the hazard -- the warning is about an abrupt REVERSAL at
-            # speed, and the settle is one move in one direction at 150 dps
-            # from wherever the head already was. Everything after it starts
-            # from rest, so the budget applies with no exemptions.
-            for i, (travel, _, _) in enumerate(travel_of(sequence, start)):
-                if i == 0:
-                    continue
-                assert travel <= MAX_GESTURE_TRAVEL_DEG, (
-                    f"{name} keyframe {i} from {start} travels {travel:.0f} deg, "
-                    f"over the {MAX_GESTURE_TRAVEL_DEG:.0f} budget"
-                )
+        for i, (travel, _, _) in enumerate(travel_of(sequence)):
+            if i == 0:
+                continue  # the settle is exempt; see _settle's note
+            assert travel <= MAX_GESTURE_TRAVEL_DEG, (
+                f"{name} keyframe {i} travels {travel:.0f} deg, over the "
+                f"{MAX_GESTURE_TRAVEL_DEG:.0f} budget"
+            )

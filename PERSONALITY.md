@@ -50,13 +50,15 @@ the same keyframe machinery M5's dances use.
 Two things this turned out to cost that the plan did not foresee, both worth
 recording because they were invisible until the arithmetic was written down:
 
-- **Keyframes are absolute poses, and a gesture fires while idle motion has the
-  head wherever it last looked** (`idle.py` reaches yaw ±50, pitch 25–55). A
-  nod's dip is the absolute pose "pitch 33"; from a head already at 25 that is
-  a *rise*. The gesture did not start off-centre, it **inverted**. Every
-  sequence now opens with a 400 ms settle to rest, given enough speed to
-  actually arrive from the far corner, and a test walks every gesture from all
-  four corners of the idle envelope.
+- **Keyframes are absolute poses, and a gesture fires while the head is
+  wherever idle motion last left it.** A nod's dip is the absolute pose
+  "pitch 33"; from a head already lower, that is a *rise*. The gesture did not
+  start off-centre, it **inverted**. Every sequence now opens with a 500 ms
+  settle to rest, fast enough to arrive from anywhere the servos reach — the
+  full range, not a narrower idle envelope. Sizing it against a claimed
+  envelope of ±50/25–55 left it 30° short, because `_small_observation` is
+  relative and the walk compounds to |yaw| 87.5 and pitch 6.1–80.5. Measured,
+  after being asserted wrongly first.
 - **`Chan.remove` runs no teardown.** Nothing had ever removed a *running*
   dance, so it never mattered; one gesture replacing another does. Without a
   teardown, blink stayed suspended and the eye weight stayed pinned — one nod
