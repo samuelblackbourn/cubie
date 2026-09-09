@@ -240,3 +240,40 @@ def test_a_body_that_is_not_json_is_a_failed_read_not_a_partial_one():
     finally:
         httpx.AsyncClient = original
     assert state is None and "JSON" in reason
+
+
+def test_voice_settings_ride_the_status_payload():
+    """The panel's values reach Cubie on the poll he already makes, rather than
+    on a second request asking the same endpoint the same question."""
+    state = office.parse_office_state({
+        "pendingApprovals": [], "pendingTotal": 0, "agentsRunning": 0,
+        "needsYou": False, "founderTasks": [], "founderTasksTotal": 0,
+        "mood": "calm", "ts": 1,
+        "voice": {"pitch": 1.3, "robot": 0.4},
+    })
+    assert state.voice == {"pitch": 1.3, "robot": 0.4}
+
+
+def test_an_office_that_says_nothing_about_the_voice_is_not_a_reset():
+    """`None` means "no opinion", which is deliberately not "use no overrides".
+    An office too old to know about the panel would otherwise silently change
+    how he sounds on the first poll, with no visible cause."""
+    state = office.parse_office_state({
+        "pendingApprovals": [], "pendingTotal": 0, "agentsRunning": 0,
+        "needsYou": False, "founderTasks": [], "founderTasksTotal": 0,
+        "mood": "calm", "ts": 1,
+    })
+    assert state.voice is None
+
+
+def test_a_voice_field_that_is_not_an_object_is_ignored():
+    """Parsed leniently on purpose: `voice_settings.coerce` owns what a legal
+    value is, and this module has no business deciding what a ring-modulation
+    depth may be."""
+    for junk in ("loud", 3, [1, 2]):
+        state = office.parse_office_state({
+            "pendingApprovals": [], "pendingTotal": 0, "agentsRunning": 0,
+            "needsYou": False, "founderTasks": [], "founderTasksTotal": 0,
+            "mood": "calm", "ts": 1, "voice": junk,
+        })
+        assert state.voice is None

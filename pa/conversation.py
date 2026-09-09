@@ -128,23 +128,44 @@ class Conversation:
             lambda: self._respond(transcript, now), "capture"
         )
 
-    async def _exchange(self, body, source: str) -> TurnResult:
+    def claim(self, source: str) -> bool:
+        """Take the one-at-a-time flag, or report that it is already held.
+
+        Public because a conversation turn is not the only thing that makes him
+        speak: the voice-settings panel previews a line through `hook.py`, and
+        that has to hold the same flag rather than merely reading it. The first
+        version of the preview CHECKED `busy` and never set it, so a tap could
+        start a turn while the preview was mid-sentence -- a refusal in one
+        direction only, which is not a lock.
+        """
         if self.busy:
-            # Almost always someone tapping again because nothing appeared to
-            # happen. Two `listen` calls would fight for one microphone.
-            #
-            # It guards the wake word too, and there it is doing more than
-            # politeness: `listen()` and a device-driven capture share one
-            # recording slot in the gateway, and it drops whichever arrives
-            # second. Refusing here means we know that happened.
             logger.info("%s ignored: already mid-conversation", source)
+            return False
+        self.busy = True
+        return True
+
+    def release(self) -> None:
+        """Give the flag back. Safe to call when it is not held."""
+        self.busy = False
+
+    async def _exchange(self, body, source: str) -> TurnResult:
+        # Almost always someone tapping again because nothing appeared to
+        # happen. Two `listen` calls would fight for one microphone.
+        #
+        # It guards the wake word too, and there it is doing more than
+        # politeness: `listen()` and a device-driven capture share one recording
+        # slot in the gateway, and it drops whichever arrives second. Refusing
+        # here means we know that happened.
+        #
+        # Through `claim` rather than the flag directly, so the panel's preview
+        # and a conversation turn contend for one lock with one implementation.
+        if not self.claim(source):
             return TurnResult(skipped="busy")
 
-        self.busy = True
         try:
             return await body()
         finally:
-            self.busy = False
+            self.release()
             # Back to standby whatever happened, or he stays frozen mid-thought
             # with idle motion switched off.
             self._character.set_status(driver_mod.STANDBY)
