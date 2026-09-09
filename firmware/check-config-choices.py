@@ -77,7 +77,7 @@ MULTINETS = {
     "CONFIG_SR_MN_EN_MULTINET7_QUANT",
 }
 
-ARGS = ["http://192.168.0.84:8420/api/companion/ota", "LANGUAGE_EN_US",
+ARGS = ["http://office-server.local:8420/api/companion/ota", "LANGUAGE_EN_US",
         "hi cubie", "Cubie", "20"]
 
 
@@ -103,6 +103,24 @@ def main() -> int:
     check("MultiNet6, whose native input is graphemes",
           "CONFIG_SR_MN_EN_MULTINET6_QUANT=y" in out)
     check("the phrase is quoted", 'CONFIG_CUSTOM_WAKE_WORD="hi cubie"' in out)
+
+    # A `.local` OTA URL needs mDNS lookups, or the name never resolves and
+    # updates stop with no symptom on the device. The two travel together, so
+    # they are asserted together rather than trusted to be edited together.
+    ota = [e for e in out if e.startswith("CONFIG_OTA_URL=")]
+    check("one OTA URL", len(ota) == 1, ota)
+    if ota and ".local" in ota[0]:
+        check("a .local OTA URL brings mDNS lookups with it",
+              "CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y" in out, out)
+
+    # ... and an ADDRESS must still work, because that is the escape hatch when
+    # resolution is the thing that broke.
+    by_ip = appended(run(patcher, base,
+                         ["http://192.168.0.84:8420/api/companion/ota"] + ARGS[1:]))
+    check("an address still produces one OTA URL",
+          [e for e in by_ip if e.startswith("CONFIG_OTA_URL=")]
+          == ['CONFIG_OTA_URL="http://192.168.0.84:8420/api/companion/ota"'],
+          [e for e in by_ip if e.startswith("CONFIG_OTA_URL=")])
 
     # 2. A stale sibling in each group is DROPPED, not left alongside.
     stale = {"builds": [{"name": "stackchan", "sdkconfig_append": [

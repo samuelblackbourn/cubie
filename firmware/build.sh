@@ -281,6 +281,19 @@ wanted = [
     # version components, and a forced update that the device cannot decline
     # is a boot loop waiting for a bad image.
     f'CONFIG_OTA_URL="{ota_url}"',
+    # OFFICE_HOST is a `.local` name by default, and a plain DNS resolver does
+    # not answer those -- mDNS does. This makes lwIP send `.local` lookups to
+    # the multicast address, so getaddrinfo (and therefore esp_http_client, and
+    # therefore Ota) can resolve office-server.local at all.
+    #
+    # Set explicitly rather than relying on the pinned IDF's default: the
+    # default may well be y, but "probably on" is not a thing to hang the
+    # update path on, and if the symbol has moved the build will say so here
+    # rather than the device failing quietly on its first check.
+    #
+    # Harmless when OFFICE_HOST is overridden with an address -- no `.local`
+    # name means no mDNS query.
+    "CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y",
     # Without this the build is zh-CN: Chinese on screen and Chinese locale
     # sound assets. It selects a Kconfig `choice`, so whether appending is
     # enough to override the choice's own default is something only the build

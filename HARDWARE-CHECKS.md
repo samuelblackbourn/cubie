@@ -14,7 +14,7 @@ specific.
 
 **Order matters.** 1–3 put the new firmware on the device and the host wiring
 in place; nothing downstream is meaningful until those pass. 4–8 are the
-device behaviours that were reasoned about and never seen. 9–12 are the
+device behaviours that were reasoned about and never seen. 9–13 are the
 end-to-end path. A failure in an early check invalidates the later ones rather
 than merely delaying them — so stop at the first red and report it.
 
@@ -290,6 +290,42 @@ they started, so that should now produce a turn too — ending on the second
 touch, because that path is manual-stop by design. It is not a separate
 feature, and if it works while the wake word does not, that is evidence the
 receiver is sound and the recogniser is not hearing his name.
+
+## 13. OTA still works now that the office is a name
+
+**Proves:** that `office-server.local` resolves from the robot. The address it
+used to carry was a DHCP lease; the name replacing it needs mDNS, and whether
+the pinned IDF's lwIP answers a `.local` lookup is something only the device can
+say.
+
+Do this **while he is still on the cable**, before you rely on it. Publish a
+build, then reset him and watch the boot.
+
+```bash
+bash ~/cubie/firmware/build.sh
+~/publish-cubie-firmware.sh
+journalctl -u virtual-office --since '5 min ago' --no-pager | grep -i ota
+```
+
+**Pass:** the office logs a request to Cubie's OTA route, and he takes the
+image.
+
+**If it fails:**
+
+- **No request reaches the office at all** — the name did not resolve. The
+  device log will say so on the version check. Rebuild with the address and
+  reflash over the cable: `OFFICE_HOST=192.168.0.84 bash ~/cubie/firmware/build.sh`.
+  Then tell me, because the interesting question is whether
+  `CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES` was accepted at all — check 1's
+  `sdkconfig_append` output is where that shows.
+- **A 404 from the office** — not resolution. The route pair mounts only when
+  office-server has *both* `AGENTHUB_COMPANION_TOKEN` and
+  `AGENTHUB_CUBIE_FIRMWARE_DIR`; the directory alone gives a 404 that looks
+  like a bad path.
+
+**Worth knowing before you worry about it:** this is the update path only. A
+name that stops resolving costs over-the-air updates until the cable comes out
+— it does not stop him working.
 
 ---
 
