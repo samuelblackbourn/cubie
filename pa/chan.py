@@ -354,6 +354,16 @@ class Chan:
         flattens every expression to one eyelid position until the face happens
         to change -- which is the exact defect `firmware/fix-eye-weight.sh`
         exists to have fixed once already.
+
+        And it is worse than persistence, because of the ORDER the board renders
+        in. `RenderLiveAvatarLocked` applies the host overrides LAST, after the
+        blink's eye weight and lip-sync's mouth weight, under its own comment
+        "Host overrides last, so they win over the resting values above". So a
+        held override outranks the two things that would otherwise take the axis
+        back: eyes pinned open leave blink running and invisible, and a mouth
+        pinned shut leaves him speaking with it closed. There is no harmless
+        value to end a sequence on -- the override has to be released, and this
+        is the only way to do it.
         """
         self._sent_face_name = None
 

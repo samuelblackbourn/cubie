@@ -248,9 +248,23 @@ def test_no_gesture_nods_with_his_eyes_shut():
 
 
 def test_a_gesture_leaves_the_eyes_open():
-    """`_finish` sets weight to None, which stops DRIVING the axis -- the device
-    keeps the last value it was sent until the firmware's blink machine moves it
-    again. So a sequence ending on a squint leaves him squinting."""
+    """`_finish` sets weight to None, which stops DRIVING the axis -- and the
+    device keeps the last value it was sent.
+
+    An earlier version of this said "until the firmware's blink machine moves
+    it again", which is wrong and wrong in the direction that matters: the
+    blink machine CANNOT move it. `RenderLiveAvatarLocked` applies the host
+    overrides LAST, after both the blink's eye weight and lip-sync's mouth
+    weight, under its own comment "Host overrides last, so they win over the
+    resting values above". So a held override does not merely persist, it
+    OUTRANKS the two things that would otherwise take the axis back: eyes
+    pinned open means blink runs and is invisible, and a mouth pinned shut
+    means he speaks with it closed.
+
+    Which is why the fix is `Chan.reassert_face` in the teardown rather than a
+    value chosen here to be harmless -- there is no harmless value. This still
+    asserts the closing values, because a sequence ending on a squint would
+    show that squint for the tick before the face is re-asserted."""
     for name, sequence in animation.GESTURES.items():
         assert sequence[-1].left_eye.weight == animation.EYES_OPEN, name
         assert sequence[-1].right_eye.weight == animation.EYES_OPEN, name

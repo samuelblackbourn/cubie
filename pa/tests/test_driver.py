@@ -328,7 +328,15 @@ def test_a_gesture_leaves_the_head_at_rest():
 
 def test_a_gesture_gives_blinking_back():
     """A sequence drives eye weight, so blink is suspended for its duration.
-    Leaving it off would be a robot that never blinks again after one nod."""
+    Leaving it off would be a robot that never blinks again after one nod.
+
+    Note what this does NOT prove: `blink_enabled` is the host's flag, and the
+    firmware can have blinking enabled while the blink is invisible, because a
+    held eye-weight override is applied after it and wins. Re-enabling the flag
+    is necessary and not sufficient -- the sufficient half is the face
+    re-assert, covered by
+    `test_a_finished_gesture_lets_the_device_have_its_face_back`. Both are
+    asserted here so the pair cannot drift apart."""
     d = fresh()
     d.chan.face.blink_enabled = True
     d.gesture("laugh")
@@ -336,6 +344,10 @@ def test_a_gesture_gives_blinking_back():
     assert d.chan.face.blink_enabled is False
     run_for(d, 3.0)
     assert d.chan.face.blink_enabled is True
+    assert "set_avatar" in d.chan.effector.names()[-6:], (
+        "the flag came back but the override did not go, so blinking is "
+        "enabled and invisible"
+    )
 
 
 # ----------------------------------------------------------------- wake --
