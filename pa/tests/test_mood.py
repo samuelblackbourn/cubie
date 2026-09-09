@@ -278,3 +278,61 @@ def test_the_first_reading_of_the_day_glances_if_something_is_waiting():
     assert character.office_mood is None
     character.set_office_mood(state(pendingTotal=3))
     assert gesture_running(character)
+
+
+def test_something_arriving_while_he_talks_is_still_noticed_afterwards():
+    """The case the first version lost, and the one that matters most.
+
+    An approval lands mid-answer. The mood is held and painted on his face when
+    he returns to standby -- but the first version compared each reading's
+    reason against the previous one, and by then `office_mood.reason` was
+    already ATTENTION, so every later poll failed the transition test and the
+    glance never happened at all. Something arrived and he never noticed, which
+    is the one thing this gesture exists to prevent."""
+    character, _ = build()
+    character.set_status(driver_mod.SPEAKING)
+    character.set_office_mood(state(needsYou=True))
+    assert not gesture_running(character), "not while he is talking"
+
+    character.set_status(driver_mod.STANDBY)
+    assert gesture_running(character), "he never noticed it"
+
+
+def test_he_does_not_glance_twice_for_the_same_waiting_thing():
+    """Returning to standby repeatedly -- several short conversations while one
+    approval sits there -- must not glance each time."""
+    character, _ = build()
+    character.set_status(driver_mod.STANDBY)
+    character.set_office_mood(state(needsYou=True))
+    now = 0.0
+    while now < 3.0:
+        character.update(now)
+        now += 0.05
+    for _ in range(3):
+        character.set_status(driver_mod.SPEAKING)
+        character.set_status(driver_mod.STANDBY)
+        assert not gesture_running(character)
+
+
+def test_the_next_thing_to_arrive_is_noticed_too():
+    """The flag has to clear, or he notices the first approval of the day and
+    nothing else ever again."""
+    character, _ = build()
+    character.set_status(driver_mod.STANDBY)
+    character.set_office_mood(state(needsYou=True))
+    now = 0.0
+    while now < 3.0:
+        character.update(now)
+        now += 0.05
+    character.set_office_mood(state())            # cleared
+    assert not character.glanced_for_attention
+    character.set_office_mood(state(pendingTotal=1))
+    assert gesture_running(character)
+
+
+def test_he_does_not_glance_in_his_sleep():
+    character, _ = build()
+    character.set_status(driver_mod.STANDBY)
+    character.set_emotion("sleepy")
+    character.set_office_mood(state(needsYou=True))
+    assert not gesture_running(character)

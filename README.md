@@ -372,6 +372,14 @@ so it never mattered; one gesture replacing another does. Without
 where the interrupted keyframe left them — one nod cut off by another and he
 never blinks again.
 
+`glance` fires **once per waiting episode, at the first moment he is standing
+by** — not once per poll, and not only on the poll that carries the transition.
+The distinction is the case that matters: an approval arriving mid-answer. The
+first version compared each reading against the previous one, so by the time he
+returned to standby `office_mood.reason` was already `attention` and every later
+poll failed the transition test. Something arrived and he never noticed, which
+is the one thing the gesture exists to prevent.
+
 And one defect they exposed rather than caused: **`dance()` stood idle motion
 down and nothing ever put it back.** It recovered only if something later set
 the status to STANDBY, which a conversation does in its `finally` — so a dance

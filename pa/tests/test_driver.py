@@ -437,3 +437,36 @@ def test_a_gesture_survives_a_head_left_anywhere_idle_motion_could_leave_it():
     assert d.performance is None
     assert d.chan.motion.target.yaw == REST_YAW
     assert d.chan.motion.target.pitch == REST_PITCH
+
+
+def test_a_misspelled_sequence_name_does_not_freeze_him():
+    """The first version stopped idle motion and THEN looked the name up, so a
+    typo left him still: idle gone, `performance` still None, so update's
+    recovery branch never fired and nothing brought it back. A frozen robot
+    from a misspelling, which is the exact defect `_perform` exists to
+    prevent."""
+    d = fresh()
+    d.set_status(driver.STANDBY)
+    assert d.idle_motion is not None
+    try:
+        d.gesture("noddd")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown name must raise")
+    assert d.idle_motion is not None, "idle motion was stood down for a gesture that never ran"
+    assert d.performance is None
+
+
+def test_a_sequence_ending_while_he_dozes_does_not_wake_the_head_up():
+    """M5's sleepy stops idle motion deliberately -- he is dozing, not idling.
+    A gesture finishing during it would put the looking-around back and undo
+    that, which reads as a robot that cannot settle."""
+    d = fresh()
+    d.set_status(driver.STANDBY)
+    d.gesture("nod")
+    d.set_emotion("sleepy")
+    assert d.sleeping is True
+    run_for(d, 3.0)
+    assert d.performance is None
+    assert d.idle_motion is None, "idle motion came back on top of a doze"

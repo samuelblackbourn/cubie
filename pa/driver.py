@@ -130,6 +130,10 @@ class CharacterDriver:
         #: The dance or gesture currently playing, or None. Held so `update`
         #: can give idle motion back when it ends -- see `_perform`.
         self.performance: "modifiers.DanceModifier | None" = None
+        #: Whether he has already looked up for the CURRENT run of things
+        #: waiting. Cleared when the office stops needing him, so the next
+        #: thing to arrive gets noticed too -- see `_glance_if_unnoticed`.
+        self.glanced_for_attention = False
         #: The last office reading, or None until one arrives. Held rather than
         #: applied on receipt, so a poll landing mid-conversation waits for
         #: STANDBY instead of being dropped -- see `set_office_mood`.
@@ -232,6 +236,8 @@ class CharacterDriver:
             # speaking the status owns both, and a mood asserting itself
             # mid-answer would be two things driving one axis.
             self._apply_office_mood()
+            # And the glance he could not take while he was talking.
+            self._glance_if_unnoticed()
 
         if is_idle:
             self._start_idle()
@@ -310,24 +316,47 @@ class CharacterDriver:
         makes an ambient signal untrustworthy.
         """
         mood = mood_mod.mood_for(state)
-        was = self.office_mood.reason if self.office_mood is not None else None
         if mood != self.office_mood:
             logger.info("office mood: %s (face %s)", mood.reason, mood.face)
         self.office_mood = mood
 
+        # One glance per attention EPISODE, taken at the first moment he is
+        # standing by -- not per poll, and not only on the poll that happens to
+        # carry the transition.
+        #
+        # The first version compared this reading's reason against the previous
+        # one, which lost the case that matters most: an approval arriving
+        # while he was mid-answer. The mood was held and painted on his face
+        # when he returned to standby, but by then `office_mood.reason` was
+        # already ATTENTION, so every later poll failed the transition test and
+        # the glance never happened at all. Something arrived and he never
+        # noticed, which is the one thing this gesture exists to prevent.
+        if mood.reason != mood_mod.ATTENTION:
+            self.glanced_for_attention = False
+
         if self.status == STANDBY:
             self._apply_office_mood()
-            # The glance `pa/mood.py` was written around: a person notices
-            # MOVEMENT, so entering `attention` looks up and comes back rather
-            # than sitting there with its chin up. The bridge held a pose for
-            # this and could not do better; a held pose reads as a statue.
-            #
-            # On the TRANSITION only. Firing whenever the mood is still
-            # `attention` would glance every fifteen seconds for as long as an
-            # approval went unanswered, which is nagging rather than noticing.
-            if mood.reason == mood_mod.ATTENTION and was != mood_mod.ATTENTION:
-                self.gesture("glance")
+            self._glance_if_unnoticed()
         return mood.reason
+
+    def _glance_if_unnoticed(self) -> None:
+        """Look up, if something is waiting and he has not looked yet.
+
+        A person notices MOVEMENT, so entering `attention` looks up and comes
+        back rather than sitting there with its chin up. The bridge held a pose
+        for this and could not do better; a held pose reads as a statue.
+
+        Called from both places he can arrive at standby holding a mood: a
+        fresh reading while already idle, and finishing a conversation with a
+        reading taken during it.
+        """
+        mood = self.office_mood
+        if mood is None or self.sleeping:
+            return
+        if mood.reason != mood_mod.ATTENTION or self.glanced_for_attention:
+            return
+        self.glanced_for_attention = True
+        self.gesture("glance")
 
     def _apply_office_mood(self) -> None:
         """Put the stored mood on his face and ring. STANDBY only.
@@ -417,6 +446,14 @@ class CharacterDriver:
         the performance is remembered, and `update` gives idle back when it
         ends.
         """
+        # Resolve the name FIRST, because it can raise. The first version
+        # stopped idle motion and then looked the name up, so a typo left him
+        # frozen: idle gone, `self.performance` still None, so `update`'s
+        # recovery branch never fired and nothing brought idle back until
+        # something happened to set STANDBY again -- the exact defect this
+        # method exists to prevent, reachable through a misspelling.
+        performance = modifiers.DanceModifier.named(name)
+
         if self.performance is not None:
             # Two sequences would drive the same servos from two timelines. The
             # newer one wins, because a gesture is a reaction to something that
@@ -429,7 +466,7 @@ class CharacterDriver:
             self.performance.abandon(self.chan)
             self.chan.remove(self.performance)
         self._stop_idle()
-        self.performance = self.chan.add(modifiers.DanceModifier.named(name))
+        self.performance = self.chan.add(performance)
         return self.performance
 
     # -------------------------------------------------------------- update --
@@ -441,5 +478,8 @@ class CharacterDriver:
         # notice: asking the modifier would mean trusting it to still be there.
         if self.performance is not None and self.performance not in self.chan.modifiers:
             self.performance = None
-            if self.status == STANDBY:
+            # Not while asleep. M5's sleepy stops idle motion on purpose -- he
+            # is dozing, not idling -- and a sequence happening to end during
+            # it would put the looking-around back and undo that.
+            if self.status == STANDBY and not self.sleeping:
                 self._start_idle()

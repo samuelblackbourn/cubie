@@ -254,7 +254,7 @@ def test_m5s_own_dances_agree_about_which_way_eye_weight_runs():
     assert animation.EYES_OPEN == max(weights)
 
 
-def test_no_gesture_is_quietly_shortened_by_the_clamp():
+def test_no_sequence_is_quietly_shortened_by_the_clamp():
     """`m5_pitch_to_deg` and `m5_yaw_to_deg` CLAMP rather than reject, so a
     keyframe outside the envelope still plays -- it just stops being the
     gesture that was written. The failure is invisible at every level, which is
@@ -268,7 +268,10 @@ def test_no_gesture_is_quietly_shortened_by_the_clamp():
     pitch_ceiling = round((PITCH_MAX - REST_PITCH) / units.M5_DEGREES_PER_UNIT)
     yaw_limit = round(YAW_MAX / units.M5_DEGREES_PER_UNIT)
 
-    for name, sequence in animation.GESTURES.items():
+    # Every sequence, not just ours. The clamp does not care who wrote the
+    # keyframe, and a check that covered only GESTURES left anything added
+    # anywhere else unguarded -- which was the state of it a moment ago.
+    for name, sequence in {**animation.SEQUENCES, **animation.GESTURES}.items():
         for i, keyframe in enumerate(sequence):
             assert pitch_floor <= keyframe.pitch.angle <= pitch_ceiling, (
                 f"{name} keyframe {i} pitch {keyframe.pitch.angle} is outside "
