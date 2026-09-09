@@ -44,8 +44,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
+import brain as brain_mod  # noqa: E402
+import conversation as conversation_mod  # noqa: E402
 import driver as driver_mod  # noqa: E402
+import office as office_mod  # noqa: E402
 from chan import Chan  # noqa: E402
+from tracking import Pose  # noqa: E402
 
 logger = logging.getLogger("cubie.live")
 
@@ -210,6 +214,9 @@ REQUIRED_TOOLS = {
     "set_blink": "blinking cannot be turned on",
 }
 OPTIONAL_TOOLS = {
+    "listen": "no tap-to-talk: he cannot hear, so the brain never gets a turn",
+    "get_head_angles": "he cannot sync to the head's real pose at boot, and "
+                       "assumes it is at rest instead",
     "set_gaze": "no gaze drift (idle expression) and no breathing",
     "set_feature": "no mouth tilt, no eye size, no dance face animation",
     "set_speech": "no speech bubble, so timed speech and the sleepy 'Zzz…' are lost",
@@ -249,7 +256,83 @@ async def check_tools(session) -> set[str]:
     return listed
 
 
-async def read_head_pose(session) -> "Pose | None":
+#: The voice runs in pa/.venv, this process runs on the gateway's interpreter,
+#: and those are two different virtualenvs on purpose -- piper-tts is not in
+#: the gateway's and must not be put there. So speaking is a subprocess.
+PA_PYTHON = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
+SPEECH_SCRIPT = Path(__file__).resolve().parent / "speech.py"
+
+#: The voice he answers in.
+DEFAULT_CHARACTER = "retro"
+
+
+async def speak_line(text: str, character: str = DEFAULT_CHARACTER) -> bool:
+    """Say one line, by running the voice with its own interpreter.
+
+    Deliberately the same command a person would type, rather than a private
+    entry point: it is already tested, and it already refuses to print the
+    token. Its stderr is surfaced on failure because "the voice model is not
+    downloaded" is the likely first-run problem and its message names the
+    exact command to fix it.
+    """
+    if not PA_PYTHON.exists():
+        logger.error("no voice: %s does not exist -- run `make pa-install`", PA_PYTHON)
+        return False
+
+    process = await asyncio.create_subprocess_exec(
+        str(PA_PYTHON), str(SPEECH_SCRIPT), "--character", character, text,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        logger.error(
+            "voice failed (exit %s): %s",
+            process.returncode,
+            (stderr or b"").decode("utf-8", "replace").strip()[:400],
+        )
+        return False
+    return True
+
+
+async def listen_once(session, duration_ms: int) -> str | None:
+    """Record and transcribe, via the gateway's `listen` tool.
+
+    `motion="face-only"` is what makes the pause read as work: he keeps the
+    thinking face and does not swing his head about while a person is talking.
+
+    The device's own VAD would be better -- it stops when you stop speaking
+    rather than always waiting the full window -- but that path delivers the
+    audio to STACKCHAN_AUDIO_HOOK_URL, a webhook this does not serve yet.
+    """
+    try:
+        result = await session.call_tool(
+            "listen",
+            {"duration_ms": duration_ms, "motion": "face-only", "language": "en"},
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed listen is a quiet turn
+        logger.warning("listen raised: %s", exc)
+        return None
+
+    reason = failure_reason(result)
+    if reason:
+        logger.warning("listen failed: %s", reason)
+        return None
+
+    for item in getattr(result, "content", None) or []:
+        text = getattr(item, "text", None)
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+            return payload["text"]
+    return None
+
+
+async def read_head_pose(session) -> Pose | None:
     """Where the head actually is, or None if the device could not say.
 
     None is a documented outcome, not a defensive maybe: the firmware's own
@@ -259,8 +342,6 @@ async def read_head_pose(session) -> "Pose | None":
     invent a pose -- `wake()` says so in the log and falls back to assuming
     rest, which is what the code did before any of this existed.
     """
-    from tracking import Pose
-
     try:
         result = await session.call_tool("get_head_angles", {})
     except Exception as exc:  # noqa: BLE001 - a failed read is not fatal
@@ -290,6 +371,27 @@ async def read_head_pose(session) -> "Pose | None":
         if payload.get("error"):
             logger.warning("get_head_angles reported: %s", payload["error"])
     return None
+
+
+def _log_turn_failure(task: "asyncio.Task") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("conversation turn failed: %r", exc)
+
+
+async def _read_office(client) -> "office_mod.OfficeState | None":
+    """The office's state, or None -- the reason goes to the log, not the model.
+
+    Unreachable, 401 and malformed all mean the same thing to an assistant on a
+    desk: it does not know what the office is doing, and should say so rather
+    than guess.
+    """
+    state, reason = await client.read()
+    if state is None:
+        logger.warning("office unreadable: %s", reason)
+    return state
 
 
 async def tail_events(path: Path, on_event) -> None:
@@ -357,16 +459,62 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
             character.set_status(driver_mod.STANDBY)
             logger.info("character stack running (idle level %d)", idle_level)
 
+            # --- the brain, when there is a key for it ---------------------
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            conversation = None
+            if api_key:
+                office_client = office_mod.OfficeClient(
+                    base_url=os.environ.get("OFFICE_HUB", office_mod.DEFAULT_BASE_URL),
+                    token=os.environ.get("AGENTHUB_COMPANION_TOKEN", ""),
+                )
+                thinker = brain_mod.Brain(
+                    api_key,
+                    office_client,
+                    model=os.environ.get("CUBIE_MODEL", brain_mod.DEFAULT_MODEL),
+                )
+                conversation = conversation_mod.Conversation(
+                    character=character,
+                    brain=thinker,
+                    listen=lambda ms: listen_once(session, ms),
+                    say=speak_line,
+                    read_office=lambda: _read_office(office_client),
+                    listen_ms=int(os.environ.get(
+                        "CUBIE_LISTEN_MS", conversation_mod.DEFAULT_LISTEN_MS)),
+                )
+                logger.info("brain ready (model %s)", thinker.model)
+            else:
+                # Not fatal: everything else -- idle motion, breathing, the
+                # face, head-pet -- works without it, and saying so once beats
+                # a tap that silently does nothing.
+                logger.warning(
+                    "ANTHROPIC_API_KEY is not set, so tap-to-talk is off. "
+                    "Everything else still runs."
+                )
+
             def on_event(event: dict) -> None:
-                if event.get("event_type") == "touch":
-                    subtype = event.get("subtype") or ""
-                    logger.info("touch event: %s", subtype)
+                if event.get("event_type") != "touch":
+                    return
+                subtype = event.get("subtype") or ""
+                logger.info("touch event: %s", subtype)
+                # A TAP means "listen to me"; a STROKE is affection and belongs
+                # to the head-pet reaction. Routing both to both would start a
+                # conversation every time he was petted.
+                if subtype == "tap" and conversation is not None:
+                    task = asyncio.create_task(
+                        conversation.turn(time.monotonic() - start)
+                    )
+                    # Detached tasks swallow their exceptions until interpreter
+                    # exit, and a turn that dies silently looks exactly like a
+                    # tap that did nothing.
+                    task.add_done_callback(_log_turn_failure)
+                else:
                     character.on_touch(subtype)
 
+            # Defined before the event handler can fire, since it closes over it.
+            start = time.monotonic()
             drain = asyncio.create_task(effector.drain())
             tail = asyncio.create_task(tail_events(event_log, on_event))
             try:
-                start = time.monotonic()
                 while True:
                     character.update(time.monotonic() - start)
                     await asyncio.sleep(TICK_S)

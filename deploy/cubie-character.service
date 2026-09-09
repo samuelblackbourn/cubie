@@ -8,8 +8,18 @@
 # `pa/idle.py` had been written for weeks with nothing running it, which is
 # exactly why the head was not moving -- so this unit is the missing half.
 #
-# Reads /etc/cubie-character.env for STACKCHAN_TOKEN. Mode 0600, root-owned,
-# like the gateway's.
+# Reads /etc/cubie-character.env. Mode 0600, root-owned, like the gateway's.
+#
+#   STACKCHAN_TOKEN            required -- the gateway's tool surface
+#   ANTHROPIC_API_KEY          the brain. WITHOUT IT tap-to-talk is off and
+#                              everything else still runs; it says so once at
+#                              startup rather than failing.
+#   AGENTHUB_COMPANION_TOKEN   the office's companion API, so he can read what
+#                              is waiting and approve or decline it
+#   OFFICE_HUB                 default http://office-server.local:8420
+#   CUBIE_MODEL                default claude-sonnet-5
+#   CUBIE_LISTEN_MS            default 5000
+#   CUBIE_IDLE_LEVEL           0-3, default 2
 #
 # Create it by DERIVING the token from the gateway's own env file, so the value
 # is never printed to a terminal (this repo's rule: no command it ships may

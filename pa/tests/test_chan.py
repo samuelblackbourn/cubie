@@ -219,17 +219,28 @@ def test_calls_the_gateway_cannot_route_are_dropped_not_queued():
     assert effector._queue.qsize() == 1
 
 
-def test_every_tool_the_effector_can_send_is_declared_as_required_or_optional():
-    """So a tool added to the effector without being taught to the gateway is
-    caught by the startup check rather than at 3 calls a second."""
+def test_every_tool_this_process_can_call_is_declared_to_the_startup_check():
+    """So a tool added without being taught to the gateway is caught at
+    startup rather than by a call that silently does nothing.
+
+    Two categories, and they are different on purpose. The effector's are
+    fire-and-forget through the flush queue; `listen` and `get_head_angles`
+    are awaited directly on the session because they return values. Both need
+    declaring, so the check is a subset relation rather than equality."""
     import live
 
     declared = set(live.REQUIRED_TOOLS) | set(live.OPTIONAL_TOOLS)
-    sendable = {
+    through_the_effector = {
         "set_avatar", "set_feature", "set_gaze", "set_mouth",
         "set_speech", "set_blink", "set_all_leds", "move_head",
     }
-    assert sendable == declared
+    awaited_on_the_session = {"listen", "get_head_angles"}
+
+    assert through_the_effector <= declared
+    assert awaited_on_the_session <= declared
+    # And nothing is declared that nothing calls -- a stale entry would make
+    # the startup warning name a capability we never actually lost.
+    assert declared == through_the_effector | awaited_on_the_session
 
 
 def test_the_stack_rides_out_a_gateway_restart_instead_of_exiting():
@@ -336,3 +347,48 @@ def test_a_failed_angle_read_does_not_take_the_process_down():
             raise ConnectionResetError("bus hang")
 
     assert asyncio.run(live.read_head_pose(Broken())) is None
+
+
+def test_the_tools_the_brain_needs_are_declared_to_the_startup_check():
+    """`listen` is how he hears. Without it in the table, a gateway that could
+    not route it would be discovered by a tap that silently did nothing."""
+    import live
+
+    assert "listen" in live.OPTIONAL_TOOLS
+    assert "get_head_angles" in live.OPTIONAL_TOOLS
+
+
+def test_a_listen_result_is_parsed_out_of_the_mcp_envelope():
+    import asyncio
+    import json as _json
+
+    import live
+
+    class Session:
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def call_tool(self, name, args):
+            assert name == "listen"
+            # face-only is what keeps him still while someone is talking.
+            assert args["motion"] == "face-only"
+            return type("R", (), {
+                "content": [type("C", (), {"text": _json.dumps(self.payload)})()]
+            })()
+
+    heard = asyncio.run(live.listen_once(Session({"text": "what is waiting?"}), 5000))
+    assert heard == "what is waiting?"
+    assert asyncio.run(live.listen_once(Session({"text": None}), 5000)) is None
+    assert asyncio.run(live.listen_once(Session({}), 5000)) is None
+
+
+def test_a_failed_listen_is_a_quiet_turn_not_a_crash():
+    import asyncio
+
+    import live
+
+    class Broken:
+        async def call_tool(self, name, args):
+            raise ConnectionResetError("gateway went away")
+
+    assert asyncio.run(live.listen_once(Broken(), 5000)) is None
