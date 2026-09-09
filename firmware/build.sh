@@ -260,12 +260,15 @@ echo "  VENDORED.md records $M5_PIN, matching build.conf"
 # instead, in the board config release.py actually reads.
 say "sdkconfig_append"
 python3 - "$BOARD/config.json" "http://$OFFICE_HOST:$OFFICE_PORT/api/companion/ota" \
-    "$FIRMWARE_LANGUAGE" <<'PYEOF'
+    "$FIRMWARE_LANGUAGE" "$WAKE_WORD" "$WAKE_WORD_DISPLAY" "$WAKE_WORD_THRESHOLD" <<'PYEOF'
 import json, pathlib, sys
 
 path = pathlib.Path(sys.argv[1])
 ota_url = sys.argv[2]
 language = sys.argv[3]
+wake_word = sys.argv[4]
+wake_word_display = sys.argv[5]
+wake_word_threshold = sys.argv[6]
 config = json.loads(path.read_text())
 
 wanted = [
@@ -284,6 +287,34 @@ wanted = [
     # can confirm -- watch for this line in the sdkconfig_append echo, and
     # then watch the boot screen.
     f"CONFIG_{language}=y",
+    # --- the wake word -------------------------------------------------
+    # A CUSTOM phrase, so it can be his own name rather than one of
+    # Espressif's pre-trained WakeNet words. The firmware supports this
+    # directly: main/audio/wake_words/custom_wake_word.cc drives esp-sr's
+    # MultiNet command recogniser and registers the phrase at runtime with
+    # esp_mn_commands_add().
+    #
+    # MultiNet6 specifically, because its native input is graphemes.
+    # Espressif's docs: "MultiNet5 requires the input command string to be
+    # phonemes, and MultiNet6 and MultiNet7 only accepts grapheme inputs to
+    # API calls" -- and MultiNet7 fed graphemes runs its own
+    # grapheme-to-phoneme step at runtime, which the same docs say costs "a
+    # little accuracy drop". So 6 is the right model for a phrase written
+    # as words.
+    #
+    # Requires ESP32-S3 with PSRAM, which CoreS3 is. Whether the pinned
+    # esp-sr (~2.3.0) actually carries MULTINET6_QUANT is something only the
+    # build can confirm -- watch for these lines in the echo below, and then
+    # watch the boot log for "Custom wake word" from custom_wake_word.cc.
+    "CONFIG_USE_CUSTOM_WAKE_WORD=y",
+    "CONFIG_SR_MN_EN_MULTINET6_QUANT=y",
+    f'CONFIG_CUSTOM_WAKE_WORD="{wake_word}"',
+    f'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="{wake_word_display}"',
+    f"CONFIG_CUSTOM_WAKE_WORD_THRESHOLD={wake_word_threshold}",
+    # Lets you interrupt him mid-answer by saying the wake word again.
+    # Default is off; for a conversation rather than a query, being able to
+    # cut in is most of what makes it feel like talking to someone.
+    "CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=y",
 ]
 
 builds = config.get("builds") or []
@@ -294,16 +325,38 @@ if target is None:
 appended = target.setdefault("sdkconfig_append", [])
 changed = False
 
-# CONFIG_LANGUAGE_* selects a Kconfig `choice`, so the options are mutually
-# exclusive -- but they are DIFFERENT KEYS, so the by-key replacement below
-# would leave both set when the language changes, and two selected options in
-# one choice is ill-defined. Drop any other language first.
+# Kconfig `choice` groups. Members are mutually exclusive but are DIFFERENT
+# KEYS, so the by-key replacement below cannot drop the loser -- it would leave
+# both set, and two selected options in one choice is ill-defined.
 #
-# Found by a test that switched EN_US to JA_JP and got both.
-wanted_language = next((e for e in wanted if e.startswith("CONFIG_LANGUAGE_")), None)
-if wanted_language is not None:
+# Found by a test that switched EN_US to JA_JP and got both. The same trap
+# applies to the wake-word type and the MultiNet model, which is why this is a
+# list rather than the one language special case it started as.
+CHOICE_GROUPS = [
+    # The UI language and its locale sound assets.
+    lambda key: key.startswith("CONFIG_LANGUAGE_"),
+    # choice WAKE_WORD_TYPE in main/Kconfig.projbuild.
+    lambda key: key in {
+        "CONFIG_WAKE_WORD_DISABLED",
+        "CONFIG_USE_ESP_WAKE_WORD",
+        "CONFIG_USE_AFE_WAKE_WORD",
+        "CONFIG_USE_CUSTOM_WAKE_WORD",
+    },
+    # choice SR_MN_EN in esp-sr's Kconfig.projbuild.
+    lambda key: key in {
+        "CONFIG_SR_MN_EN_NONE",
+        "CONFIG_SR_MN_EN_MULTINET5_SINGLE_RECOGNITION_QUANT8",
+        "CONFIG_SR_MN_EN_MULTINET6_QUANT",
+        "CONFIG_SR_MN_EN_MULTINET7_QUANT",
+    },
+]
+
+for in_group in CHOICE_GROUPS:
+    chosen = next((e for e in wanted if in_group(e.split("=", 1)[0])), None)
+    if chosen is None:
+        continue
     stale = [e for e in appended
-             if e.startswith("CONFIG_LANGUAGE_") and e != wanted_language]
+             if in_group(e.split("=", 1)[0]) and e != chosen]
     for entry in stale:
         print(f"  - {entry}   (a choice allows only one)")
         appended.remove(entry)

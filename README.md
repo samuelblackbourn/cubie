@@ -690,6 +690,49 @@ The cost is loading the 60 MB Piper model per utterance, which is unmeasured on
 this hardware. If it hurts, the fix is a long-lived voice worker, not merging
 the virtualenvs.
 
+### He answers to his own name
+
+The wake word is **"hi cubie"**, and it is his name rather than one of
+Espressif's pre-trained phrases because the firmware supports a **custom** one
+directly — `CONFIG_USE_CUSTOM_WAKE_WORD`, implemented in
+`main/audio/wake_words/custom_wake_word.cc`, which drives esp-sr's MultiNet
+command recogniser and registers the phrase at runtime with
+`esp_mn_commands_add()`.
+
+WakeNet, the always-on detector, only knows phrases Espressif has trained — the
+list runs to Alexa, Jarvis, Computer, Hi ESP and a dozen others, and you cannot
+add to it, because each is a neural net trained on that specific phrase.
+MultiNet is the other half of esp-sr, and it takes phrases you give it.
+
+**Plain words, not phonemes**, and that is a model choice. Espressif's docs:
+*"MultiNet5 requires the input command string to be phonemes, and MultiNet6 and
+MultiNet7 only accepts grapheme inputs to API calls."* MultiNet7 fed graphemes
+runs its own grapheme-to-phoneme step at runtime, which the same docs say costs
+*"a little accuracy drop"* — so **MultiNet6**, whose native input is graphemes,
+is the right model for a phrase written as words.
+
+Three knobs in `build.conf`:
+
+```
+WAKE_WORD="hi cubie"        plain lower-case words
+WAKE_WORD_DISPLAY="Cubie"   what the firmware calls him
+WAKE_WORD_THRESHOLD=20      1-99, and LOWER IS MORE SENSITIVE
+```
+
+*"hi cubie"* rather than a bare *"cubie"*: a two-syllable name on its own
+false-fires far more than one with a carrier word, and MultiNet is a command
+recogniser rather than a purpose-trained wake model, so it needs the help. The
+threshold is the other knob — raise it if he answers when nobody spoke to him.
+
+`CONFIG_WAKE_WORD_DETECTION_IN_LISTENING` is also on, which the firmware
+defaults off. It lets you cut in while he is talking, and for a conversation
+rather than a query that is most of what makes it feel like talking to someone.
+
+Requires ESP32-S3 with PSRAM, which CoreS3 is. Whether the pinned esp-sr
+(`~2.3.0`) carries `MULTINET6_QUANT` is something only the build can confirm —
+the `sdkconfig_append` echo lists what it set, and the boot log carries
+`custom_wake_word.cc`'s own lines.
+
 ### Why the wake word needed a firmware change
 
 The short version: **in the xiaozhi protocol the server ends every capture, and
@@ -742,11 +785,8 @@ of that loop, which is what the gateway plus a hook receiver are.
 
 ### What is not built yet
 
-**The wake word.** Two things are missing and neither is small: the device's
-wake word is still the Chinese *"Ni hao xiao zhi"* (an English WakeNet word is
-a firmware change), and the wake path delivers audio to
-`STACKCHAN_AUDIO_HOOK_URL` — a webhook nothing serves. So the trigger today is
-tap-to-talk only.
+**The hook receiver.** The wake path delivers audio to
+`STACKCHAN_AUDIO_HOOK_URL`, and nothing serves that webhook yet.
 
 That hook path is also the better listener: it uses the device's **own VAD** and
 stops when you stop speaking, where the `listen` tool always waits its full
