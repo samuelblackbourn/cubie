@@ -29,6 +29,9 @@
 #                           this firmware ever used -- and a `thinking` face
 #                           built on them. Anchors on the resting-mouth block
 #                           fix-expression-depth emits, so it must follow it
+#   apply-vad-auto-stop     let the device end its own listen when the speaker
+#                           stops. Touches application.cc/h, which nothing else
+#                           in this chain touches, so its position is free
 #   cubie-ota-setup         build serial in PROJECT_VER, installs the publisher
 #
 # Every step is idempotent, so a re-run on an already-patched tree is a series
@@ -214,6 +217,7 @@ PATCHES=(
   apply-face-and-touch.sh
   apply-m5-touch.sh
   apply-m5-expression.sh
+  apply-vad-auto-stop.sh
   cubie-ota-setup.sh
 )
 for patch in "${PATCHES[@]}"; do

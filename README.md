@@ -690,6 +690,56 @@ The cost is loading the 60 MB Piper model per utterance, which is unmeasured on
 this hardware. If it hurts, the fix is a long-lived voice worker, not merging
 the virtualenvs.
 
+### Why the wake word needed a firmware change
+
+The short version: **in the xiaozhi protocol the server ends every capture, and
+nothing was ending the wake word's.** Traced through the firmware rather than
+assumed:
+
+- `Application::StopListening()` is called from exactly **one** place — the
+  incoming-JSON handler, on `{"type":"listen","state":"stop"}` from the server.
+- The device *has* a voice-activity detector, but its callback only sets
+  `voice_detected_` and flashes an LED. **Nothing reads it to end a capture.**
+- `kListeningModeAutoStop` names the mode the *server* is told about. It does
+  not make the device stop by itself.
+
+So on the wake-word path the device records, the gateway buffers, and each
+waits for the other. On the LCD-touch path `ToggleChatState` sets
+`kListeningModeManualStop`, which is why touching the screen records until you
+touch it again — that is the firmware working as designed, not a fault.
+
+And the gateway's only way to end a listen is its `listen` tool: start, wait a
+**fixed** window, stop. Fine for a timed capture, useless for a conversation,
+because it cannot know when a sentence finished.
+
+`apply-vad-auto-stop.sh` adds the missing half, using the VAD event the
+firmware already raises and already ignores: speech stops → arm a timer; speech
+resumes → cancel it; timer expires → `StopListening()`, exactly as if the
+server had asked. **1200 ms** of silence, because a natural mid-sentence pause
+is commonly 300–600 ms.
+
+Two guards, both load-bearing. It will not fire before any speech has been
+heard, or a wake word with nobody talking would end the capture instantly and
+transcribe silence every time. And a **15 second** maximum ends it regardless,
+because a room with a fan in it can hold the VAD high indefinitely — a capture
+that never ends is the bug this removes, not one to reintroduce from the other
+side. Manual-stop captures are left alone: a held button is deliberate.
+
+### What M5's software does about conversation: nothing
+
+Worth recording, because it is not what it looks like. Their `app_ai_agent` is
+**57 lines** whose entire body is `GetHAL().requestXiaozhiStart()`. The
+conversation belongs to the xiaozhi firmware talking to a xiaozhi-protocol
+server — theirs is a Go service in `server/` with "XiaoZhi integration logic".
+
+What M5 *does* contribute is the avatar reacting to those states, and that is
+already ported: `SetStatus` driving idle motion and speaking, `SetEmotion`
+mapping emotion words onto faces, the modifier stack, the dances.
+
+So there is nothing left in M5's tree to port for the conversation itself. The
+missing piece was never theirs — it is that **we** have to be the server side
+of that loop, which is what the gateway plus a hook receiver are.
+
 ### What is not built yet
 
 **The wake word.** Two things are missing and neither is small: the device's
