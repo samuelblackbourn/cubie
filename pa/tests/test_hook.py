@@ -354,3 +354,79 @@ def test_the_installer_sets_no_hook_token():
     setting one would create a second secret to keep in step for no gain, and
     a mismatched pair would look exactly like an unauthorised sender."""
     assert "STACKCHAN_AUDIO_HOOK_TOKEN=" not in installer()
+
+
+# --- connection hygiene -----------------------------------------------------
+
+
+def raw_post(address, *, body: bytes, token: str | None = TOKEN,
+             content_length: int | None = None, keep_alive: bool = True) -> bytes:
+    """Send a request over a bare socket and return the raw response.
+
+    `urllib` sends `Connection: close` and hides the response framing, so it
+    cannot see either of the properties below. The gateway uses `aiohttp`,
+    which keeps connections alive by default -- so this is closer to the real
+    client than the convenience wrapper is.
+    """
+    import socket
+
+    length = len(body) if content_length is None else content_length
+    lines = [b"POST /audio HTTP/1.1", b"Host: localhost"]
+    if token is not None:
+        lines.append(f"Authorization: Bearer {token}".encode())
+    lines.append(f"Content-Length: {length}".encode())
+    lines.append(b"Content-Type: audio/ogg")
+    if keep_alive:
+        lines.append(b"Connection: keep-alive")
+    request = b"\r\n".join(lines) + b"\r\n\r\n" + body
+
+    with socket.create_connection(address, timeout=5) as sock:
+        sock.sendall(request)
+        # Read exactly one response and stop. Reading to EOF would sit through
+        # the socket timeout on every ACCEPTED capture, because a kept-alive
+        # connection is the correct answer there -- and that turned the whole
+        # file from under two seconds into seven.
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return data
+            data += chunk
+        head, _, rest = data.partition(b"\r\n\r\n")
+        declared = 0
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"content-length:"):
+                declared = int(line.split(b":", 1)[1])
+        while len(rest) < declared:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            rest += chunk
+    return head + b"\r\n\r\n" + rest
+
+
+def test_a_rejection_closes_the_connection(served):
+    """A rejection answers without reading the body, so those bytes are still
+    queued on a keep-alive connection. Leaving it open would have the next read
+    parse the sender's audio as a request line."""
+    r = served(max_bytes=16)
+    response = raw_post(r.receiver.address, body=b"z" * 512)
+    assert b"413" in response.split(b"\r\n")[0]
+    assert b"Connection: close" in response
+
+
+def test_an_accepted_capture_does_not_need_the_connection_closed(served):
+    """The body has been read in full by then, so the connection is reusable
+    and there is no reason to make the gateway open another."""
+    r = served()
+    response = raw_post(r.receiver.address, body=b"ogg")
+    assert b"202" in response.split(b"\r\n")[0]
+    assert b"Connection: close" not in response
+
+
+def test_a_sender_that_stalls_does_not_hold_a_thread_for_ever():
+    """`StreamRequestHandler.timeout` is None by default, so a half-open
+    request would keep its thread until the process died. One leaked thread per
+    capture is a slow death rather than a visible fault."""
+    assert hook_mod._Handler.timeout is not None
+    assert hook_mod._Handler.timeout <= 60

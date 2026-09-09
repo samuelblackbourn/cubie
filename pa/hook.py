@@ -92,6 +92,13 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "cubie-hook"
     sys_version = ""
 
+    #: A sender that opens a connection and stalls would otherwise hold a
+    #: thread for as long as the process lives, because
+    #: `StreamRequestHandler.timeout` defaults to None -- checked, not assumed.
+    #: The gateway's own POST gives up after 10 s, so anything still hanging
+    #: about at 30 is not it.
+    timeout = 30
+
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's name
         receiver = self.receiver
 
@@ -151,6 +158,15 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
+        if status >= 300:
+            # Every rejection above answers WITHOUT reading the body -- that is
+            # the point of a size cap, and of not touching an unauthorised
+            # request at all. On a keep-alive connection those unread bytes are
+            # still queued, and the next read would parse them as a request
+            # line. So a rejection ends the connection rather than leaving the
+            # sender's body to be misread as its next request.
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(payload)
 
