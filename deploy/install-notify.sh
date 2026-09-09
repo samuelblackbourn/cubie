@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Turn on the gateway's physical-event log, at paths that do not depend on HOME.
+# Point the gateway at the host: its physical-event log, and the audio hook.
+#
+# Two directions of the same wiring, which is why they are one script. Touch
+# events reach the character stack through a file the gateway appends to; a
+# device-driven capture (the wake word) reaches it through an HTTP POST. Both
+# are off until the gateway is told where to send them, and both were silent
+# when they were off.
 #
 # --- Why this is a script and not two lines in the README ---
 #
@@ -18,6 +24,12 @@
 #
 #   STACKCHAN_NOTIFY_CONFIG   where to read notify.yml from
 #   STACKCHAN_EVENTS_PATH     where to append the JSONL event log
+#   STACKCHAN_AUDIO_HOOK_URL  where to POST a device-driven capture
+#
+# The third needs no token of its own: the gateway signs the POST with
+# STACKCHAN_AUDIO_HOOK_TOKEN when set and falls back to STACKCHAN_TOKEN, which
+# both ends already share. So there is no new secret here to leak or rotate --
+# which is why this script sets the URL and deliberately not a token.
 #
 # The first is worth having for its own sake: when it points at a missing file
 # the gateway logs "STACKCHAN_NOTIFY_CONFIG points to a non-existent file",
@@ -42,6 +54,10 @@ UNIT="${UNIT:-stackchan-gateway}"
 ENV_FILE="${ENV_FILE:-/etc/stackchan-gateway.env}"
 CONFIG_PATH="${CONFIG_PATH:-/etc/cubie/notify.yml}"
 EVENTS_PATH="${EVENTS_PATH:-/var/lib/cubie/stackchan-events.jsonl}"
+# Loopback: the gateway and the character stack are the same box, and this
+# endpoint makes the robot speak. Must match pa/hook.py's DEFAULT_URL -- a test
+# compares them, because a mismatch here loses every capture in silence.
+HOOK_URL="${HOOK_URL:-http://127.0.0.1:8768/audio}"
 
 [ -f "$HERE/stackchan-notify.yml" ] || {
   echo "ERROR: $HERE/stackchan-notify.yml not found" >&2; exit 1; }
@@ -83,7 +99,9 @@ fi
 # Append only what is missing, and never rewrite the file: it carries the
 # gateway's token, and a script that rewrites a secrets file is a script that
 # can lose one.
-for pair in "STACKCHAN_NOTIFY_CONFIG=$CONFIG_PATH" "STACKCHAN_EVENTS_PATH=$EVENTS_PATH"; do
+for pair in "STACKCHAN_NOTIFY_CONFIG=$CONFIG_PATH" \
+            "STACKCHAN_EVENTS_PATH=$EVENTS_PATH" \
+            "STACKCHAN_AUDIO_HOOK_URL=$HOOK_URL"; do
   key="${pair%%=*}"
   if sudo grep -qE "^${key}=" "$ENV_FILE"; then
     current="$(sudo sed -nE "s/^${key}=//p" "$ENV_FILE" | tr -d '"'"'")"
@@ -125,3 +143,5 @@ echo "  sudo systemctl restart $UNIT"
 [ "$RESTART_CHARACTER" = yes ] && echo "  sudo systemctl restart cubie-character"
 echo "then stroke his head and check:"
 echo "  tail -3 $EVENTS_PATH"
+echo "and say the wake word; the gateway should log a device-driven listen"
+echo "rather than 'STACKCHAN_AUDIO_HOOK_URL not configured'."

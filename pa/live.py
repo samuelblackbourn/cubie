@@ -47,7 +47,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import brain as brain_mod  # noqa: E402
 import conversation as conversation_mod  # noqa: E402
 import driver as driver_mod  # noqa: E402
+import hook as hook_mod  # noqa: E402
 import office as office_mod  # noqa: E402
+import ogg_opus  # noqa: E402
+import transcribe as transcribe_mod  # noqa: E402
 from chan import Chan  # noqa: E402
 from tracking import Pose  # noqa: E402
 
@@ -310,9 +313,12 @@ async def listen_once(session, duration_ms: int) -> str | None:
     `motion="face-only"` is what makes the pause read as work: he keeps the
     thinking face and does not swing his head about while a person is talking.
 
-    The device's own VAD would be better -- it stops when you stop speaking
-    rather than always waiting the full window -- but that path delivers the
-    audio to STACKCHAN_AUDIO_HOOK_URL, a webhook this does not serve yet.
+    This is the fixed-window listener, and it is now the SECOND-best one: the
+    wake word takes the device's own VAD, which ends the capture when the
+    speaker stops rather than always waiting the window out (`hook.py`). It
+    stays because it is the only listener we can *start* -- the gateway has no
+    tool that makes the device begin listening, so a tap has nothing else to
+    call. Checked against the gateway's tool table, not assumed.
     """
     try:
         result = await session.call_tool(
@@ -500,6 +506,71 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     "Everything else still runs."
                 )
 
+            # --- the wake word's audio, when we can transcribe it ---------
+            #
+            # The gateway POSTs a device-driven capture (wake word, button or
+            # LCD touch) to STACKCHAN_AUDIO_HOOK_URL. With nothing serving that
+            # URL it drops every frame -- so before this the wake word could
+            # wake him and nothing could come of it.
+            #
+            # The token is the gateway's own fallback chain, mirrored rather
+            # than re-decided: STACKCHAN_AUDIO_HOOK_TOKEN when set, otherwise
+            # the STACKCHAN_TOKEN both ends already share. The hook therefore
+            # needs no new secret.
+            receiver = None
+            engine = None
+            decode = None
+            hook_token = ""
+            if conversation is None:
+                logger.warning(
+                    "the wake word can wake him but not be answered: the brain "
+                    "is off, so device captures are not served."
+                )
+            else:
+                hook_token = os.environ.get("STACKCHAN_AUDIO_HOOK_TOKEN") or token or ""
+                try:
+                    engine = transcribe_mod.load_engine()
+                    decode = transcribe_mod.load_decoder()
+                except transcribe_mod.TranscriberUnavailable as exc:
+                    # Named at startup rather than on the first wake word, for
+                    # the same reason check_tools runs before the first tick: a
+                    # preflight that reports at use time reports into a log
+                    # nobody is reading yet.
+                    logger.error("wake-word audio cannot be transcribed: %s", exc)
+                    engine = decode = None
+
+            async def capture_turn(capture: hook_mod.Capture) -> None:
+                """Transcribe a delivered capture, then take a normal turn."""
+                try:
+                    heard = await transcribe_mod.transcribe_capture(
+                        capture.body, engine=engine, decode=decode
+                    )
+                except ogg_opus.OggError as exc:
+                    # A mangled body is not a quiet turn: transcribing it would
+                    # invent words nobody said, and the brain would act on them.
+                    logger.warning("capture refused (session=%s): %s",
+                                   capture.session_id or "(none)", exc)
+                    return
+                except transcribe_mod.TranscriberUnavailable as exc:
+                    logger.error("capture could not be transcribed: %s", exc)
+                    return
+                await conversation.turn_on_transcript(heard, time.monotonic() - start)
+
+            def on_capture(capture: hook_mod.Capture) -> None:
+                """Called from the receiver's thread; must not block.
+
+                `call_soon_threadsafe` is the whole bridge: the HTTP response
+                has already been written by this point, so the turn runs on the
+                event loop with the socket closed, which is what keeps the
+                gateway's 10 second POST timeout irrelevant to how long a turn
+                takes.
+                """
+                def spawn() -> None:
+                    task = asyncio.create_task(capture_turn(capture))
+                    task.add_done_callback(_log_turn_failure)
+
+                loop.call_soon_threadsafe(spawn)
+
             def on_event(event: dict) -> None:
                 if event.get("event_type") != "touch":
                     return
@@ -521,6 +592,23 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
 
             # Defined before the event handler can fire, since it closes over it.
             start = time.monotonic()
+
+            if engine is not None and decode is not None:
+                try:
+                    receiver = hook_mod.HookReceiver(
+                        hook_token,
+                        on_capture,
+                        host=os.environ.get("CUBIE_HOOK_HOST", hook_mod.DEFAULT_HOST),
+                        port=int(os.environ.get("CUBIE_HOOK_PORT", hook_mod.DEFAULT_PORT)),
+                    )
+                    receiver.start()
+                except (OSError, ValueError) as exc:
+                    # A bound port or a missing token costs the wake word and
+                    # nothing else, so it is reported rather than fatal --
+                    # tap-to-talk, the face and the head all still work.
+                    logger.error("audio hook is not listening: %s", exc)
+                    receiver = None
+
             drain = asyncio.create_task(effector.drain())
             tail = asyncio.create_task(tail_events(event_log, on_event))
             try:
@@ -528,6 +616,8 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     character.update(time.monotonic() - start)
                     await asyncio.sleep(TICK_S)
             finally:
+                if receiver is not None:
+                    receiver.stop()
                 for task in (drain, tail):
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
