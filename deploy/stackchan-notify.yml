@@ -3,12 +3,19 @@
 # Install as the GATEWAY's own config -- it resolves this against its HOME,
 # which the systemd drop-in sets to its StateDirectory:
 #
-#   sudo install -d -o stackchan-gateway -g stackchan-gateway \
-#       /var/lib/stackchan-gateway/.config/stackchan-mcp
-#   sudo install -o stackchan-gateway -g stackchan-gateway -m 0644 \
-#       ~/cubie/deploy/stackchan-notify.yml \
-#       /var/lib/stackchan-gateway/.config/stackchan-mcp/notify.yml
+#   d=/var/lib/stackchan-gateway
+#   owner=$(stat -c '%U:%G' "$d")          # DERIVE it; do not guess a username
+#   sudo install -d -o "${owner%:*}" -g "${owner#*:}" "$d/.config/stackchan-mcp"
+#   sudo install -o "${owner%:*}" -g "${owner#*:}" -m 0644 \
+#       ~/cubie/deploy/stackchan-notify.yml "$d/.config/stackchan-mcp/notify.yml"
 #   sudo systemctl restart stackchan-gateway
+#
+# The owner is DERIVED from the gateway's own state directory rather than
+# named. The first version of these lines invented a `stackchan-gateway` user,
+# which does not exist -- `install: invalid user 'stackchan-gateway'`. The
+# gateway's StateDirectory is owned by whatever its unit runs as, and
+# `systemctl show -p User --value stackchan-gateway` is how you find that out.
+# Deriving it is right whatever the answer is.
 #
 # Without this, `jsonl.enabled` defaults to FALSE and no touch event ever
 # leaves the gateway -- so stroking his head does nothing, and it looks like a
