@@ -279,3 +279,21 @@ def test_the_approve_tool_warns_the_model_what_it_is_doing():
     approve = next(t for t in brain.TOOLS if t["name"] == "approve_request")
     assert "brand-new" in approve["description"]
     assert "cannot be undone" in approve["description"]
+
+
+def test_the_faces_offered_to_the_model_are_the_faces_the_board_has():
+    """Two hand-written lists, which is how `--characters` came to omit the
+    `retro` voice. The copy in `brain.py` is deliberate -- importing `chan`
+    here would pull the character stack in for six strings -- so the agreement
+    is asserted instead of assumed.
+
+    Ordering matters too, not just membership: the board's tables are
+    index-matched to `chan.FACES`, so a reordering that left the sets equal
+    would still be wrong."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import chan
+
+    assert brain.FACES == chan.FACES

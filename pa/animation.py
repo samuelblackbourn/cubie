@@ -148,12 +148,172 @@ LOOK_AROUND = (
 )
 
 #: Every dance M5 ships, by the name a caller would ask for.
+#:
+#: Exactly M5's four, and a test asserts that. Ours live in `GESTURES` rather
+#: than being added here: this dict's whole claim is "what the port carried
+#: over", and a claim you keep appending to stops being checkable.
 SEQUENCES = {
     "happy": HAPPY,
     "robot": ROBOT,
     "panic": PANIC,
     "look-around": LOOK_AROUND,
 }
+
+
+# --------------------------------------------------------------- gestures --
+#
+# Ours, not M5's. A dance is a performance you ask for; a gesture is
+# punctuation -- a beat long, in the middle of something else. They share the
+# keyframe machinery and nothing else.
+#
+# --- The envelope, derived rather than guessed ---
+#
+# `units.m5_pitch_to_deg` is `clamp(REST_PITCH + units/10, 5, 85)` with
+# REST_PITCH 45, so pitch offsets stay honest between -400 and +400. Yaw is
+# `clamp(units/10, -90, 90)`, so -900..+900. Past those the clamp does not
+# reject the pose, it QUIETLY SHORTENS IT -- the gesture still plays and just
+# stops looking like itself. Everything below sits inside a third of the
+# envelope, because a nod does not need 40 degrees.
+#
+# Higher pitch looks UP (M5's own "raise head" adds to pitch; our rest is 45 of
+# 5..85), so a nod's dip is NEGATIVE.
+#
+# --- Speed has to be fast enough to arrive ---
+#
+# `move_with_speed` sends degrees per second and the device travels at that
+# rate. A frame that asks for 30 degrees in 200 ms needs 150 dps; command less
+# and the next keyframe interrupts the move part-way, so the gesture is
+# silently shallower than it reads on the page. Every gesture here commands
+# enough speed to complete its own travel, and a test checks the arithmetic.
+#
+# M5's PANIC deliberately fails that check -- its 40-degree reversals in 100 ms
+# would need 400 dps against a 240 dps ceiling -- and that is WHY it reads as
+# frantic: the head never arrives anywhere. So the test covers gestures only,
+# and the exemption is the point rather than an oversight.
+#
+# --- Every gesture opens with a settle, and it is not decoration ---
+#
+# These keyframes are ABSOLUTE poses, and a gesture fires while idle motion has
+# the head wherever it last looked -- `idle.py` reaches yaw +/-50 and pitch
+# 25..55. A nod's dip is "pitch 33"; from a head already at 25 that is a RISE.
+# The gesture does not merely start off-centre, it inverts.
+#
+# So the first keyframe of each sequence goes to rest, and is given the time
+# and the speed to actually get there from the worst case: 50 degrees of yaw at
+# 150 dps needs 334 ms, so 400 ms at M5 speed 600 arrives with margin. The
+# alternative was relative keyframes, which is a different engine -- M5's are
+# absolute and so are ours.
+#
+# The cost is 400 ms of settle before the gesture proper, which is also roughly
+# what a person does before nodding. `_settle` builds it so the number lives in
+# one place, and a test walks every gesture from the four worst starting poses.
+
+#: How long the opening move gets, and how fast, to reach rest from anywhere
+#: the idle system can leave the head. See the note above.
+SETTLE_MS = 400
+SETTLE_SPEED = 600
+
+#: Eye weight for OPEN, and it is 100 rather than 0 -- the eyelid is a black
+#: square that slides OFF the eye as weight rises, so 0 covers it completely.
+#:
+#: `firmware/fix-eye-weight.sh` exists because the first port had this
+#: backwards and rendered both eyes shut, and the first draft of these gestures
+#: made the same mistake for the same reason: 0 reads as "nothing set" and is
+#: in fact "fully closed". Every one of M5's own keyframes uses 100, which is
+#: the tell. A nod with his eyes shut is not a subtle failure, but nothing in
+#: the code would have said so.
+EYES_OPEN = 100
+
+#: Mouth weight for closed, where 0 genuinely does mean shut -- the mouth
+#: opens as weight rises. Named only so the two zeros in a keyframe are not
+#: mistaken for each other.
+MOUTH_CLOSED = 0
+
+
+def _settle() -> Keyframe:
+    """The opening keyframe: get to rest, from wherever we actually are."""
+    return _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED),
+               (0, SETTLE_SPEED), (0, SETTLE_SPEED), SETTLE_MS)
+
+
+#: Yes. Two dips of 12 degrees, because one reads as a twitch and three as
+#: eagerness. 240 ms down and 260 ms back is the cadence of an actual nod --
+#: slightly slower coming up than going down.
+NOD = (
+    _settle(),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (0, 600), (-120, 600), 240),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (0, 600), (0, 600), 260),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (0, 600), (-120, 600), 240),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (0, 600), (0, 600), 260),
+)
+
+#: No. Yaw only, 15 degrees each way, three crossings and back to centre. The
+#: widest single move is 30 degrees, half the 60 that upstream's known-issues
+#: list warns can hang the servo bus on an abrupt reversal.
+SHAKE = (
+    _settle(),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (-150, 700), (0, 700), 200),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (150, 700), (0, 700), 220),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (-150, 700), (0, 700), 220),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (0, 700), (0, 700), 200),
+)
+
+#: Laughing. A bounce rather than a sway: small, fast, and on both axes at
+#: once, with the mouth open and the eyes squeezed up. M5 has no laugh -- their
+#: HAPPY is a slow sway of the whole body -- so this is built from their idiom
+#: rather than ported from their code.
+#:
+#: It does not make a sound. Piper cannot fake a laugh and "ha. ha." read aloud
+#: is not one, so this is the movement and the face; the noise is an open
+#: question in PERSONALITY.md.
+LAUGH = (
+    _settle(),
+    _kf((0, -10, 0, 60), (0, 0, 0, 100), (60, 800), (80, 800), 150),
+    _kf((0, -10, 0, 60), (0, 0, 0, 80), (-60, 800), (-40, 800), 150),
+    _kf((0, -10, 0, 60), (0, 0, 0, 100), (60, 800), (80, 800), 150),
+    _kf((0, -10, 0, 60), (0, 0, 0, 80), (-60, 800), (-40, 800), 150),
+    _kf((0, 0, 0, 60), (0, 0, 0, 100), (0, 800), (40, 800), 200),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (0, 400), (0, 400), 300),
+)
+
+#: Noticing something. This is what `attention` wanted and could not have while
+#: the office's mood was a held pose: a person's eye is caught by MOVEMENT, so
+#: he looks up and off to one side and then comes back, rather than sitting
+#: there with his chin up.
+#:
+#: Slower than a nod on purpose -- 400 ms out, 500 ms back. A quick version of
+#: this reads as a flinch.
+GLANCE = (
+    _settle(),
+    _kf((-20, -20, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (110, 300), (150, 300), 400),
+    _kf((-20, -20, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (110, 300), (150, 300), 500),
+    _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (0, 300), (0, 300), 500),
+)
+
+#: Ours, by the name a caller asks for.
+GESTURES = {
+    "nod": NOD,
+    "shake": SHAKE,
+    "laugh": LAUGH,
+    "glance": GLANCE,
+}
+
+
+def lookup(name: str) -> tuple[Keyframe, ...]:
+    """A dance or a gesture, by name. Raises rather than doing nothing quietly.
+
+    One entry point over both dicts, so a caller does not have to know which
+    kind a name is and there is one error message listing everything available.
+    A name in both would silently shadow, so a test forbids it.
+    """
+    if name in SEQUENCES:
+        return SEQUENCES[name]
+    if name in GESTURES:
+        return GESTURES[name]
+    raise KeyError(
+        f"unknown sequence {name!r}; "
+        f"dances {sorted(SEQUENCES)}, gestures {sorted(GESTURES)}"
+    )
 
 
 def duration_of(sequence: tuple[Keyframe, ...]) -> float:

@@ -197,3 +197,84 @@ def test_every_led_channel_is_one_the_device_will_take():
         for channel in mood_mod.mood_for(st).leds:
             assert isinstance(channel, int)
             assert 0 <= channel <= 255
+
+
+# --- the glance -------------------------------------------------------------
+#
+# What `pa/mood.py` was written around and could not have while the office's
+# mood was a held pose. A person notices movement, not an attitude.
+
+
+def gesture_running(character):
+    import modifiers
+
+    return [m for m in character.chan.modifiers
+            if isinstance(m, modifiers.DanceModifier)]
+
+
+def test_entering_attention_makes_him_look_up_and_come_back():
+    character, _ = build()
+    character.set_status(driver_mod.STANDBY)
+    character.set_office_mood(state())
+    assert not gesture_running(character)
+    character.set_office_mood(state(needsYou=True))
+    assert gesture_running(character), "entering attention should glance"
+
+
+def test_staying_in_attention_does_not_glance_again():
+    """Every fifteen seconds for as long as an approval goes unanswered is
+    nagging rather than noticing."""
+    character, _ = build()
+    character.set_status(driver_mod.STANDBY)
+    character.set_office_mood(state(needsYou=True))
+    now = 0.0
+    while now < 3.0:
+        character.update(now)
+        now += 0.05
+    assert not gesture_running(character)
+    character.set_office_mood(state(needsYou=True, pendingTotal=1))
+    assert not gesture_running(character), "still attention: no second glance"
+
+
+def test_leaving_and_re_entering_attention_glances_again():
+    """A new thing arriving after the last was cleared is a new event, and
+    worth noticing."""
+    character, _ = build()
+    character.set_status(driver_mod.STANDBY)
+    character.set_office_mood(state(needsYou=True))
+    now = 0.0
+    while now < 3.0:
+        character.update(now)
+        now += 0.05
+    character.set_office_mood(state())
+    character.set_office_mood(state(needsYou=True))
+    assert gesture_running(character)
+
+
+def test_he_does_not_glance_while_being_spoken_to():
+    """The status owns the head then, and a reading arriving mid-answer is held
+    rather than acted on."""
+    character, _ = build()
+    character.set_status(driver_mod.LISTENING)
+    character.set_office_mood(state(needsYou=True))
+    assert not gesture_running(character)
+
+
+def test_no_other_mood_glances():
+    """Only `attention` means something arrived for a person."""
+    for st in (None, state(founderTasksTotal=1), state(agentsRunning=1), state()):
+        character, _ = build()
+        character.set_status(driver_mod.STANDBY)
+        character.set_office_mood(st)
+        assert not gesture_running(character), mood_mod.mood_for(st).reason
+
+
+def test_the_first_reading_of_the_day_glances_if_something_is_waiting():
+    """No previous mood at all is still a transition INTO attention. Treating
+    an absent previous reading as 'already attention' would mean he never
+    noticed anything that was waiting before he started up."""
+    character, _ = build()
+    character.set_status(driver_mod.STANDBY)
+    assert character.office_mood is None
+    character.set_office_mood(state(pendingTotal=3))
+    assert gesture_running(character)
