@@ -597,10 +597,19 @@ reads like a resource problem and is a missing file.
 Then, for touch to reach him at all — it is off by default:
 
 ```
-sudo install -d -o stackchan-gateway -g stackchan-gateway     /var/lib/stackchan-gateway/.config/stackchan-mcp
-sudo install -o stackchan-gateway -g stackchan-gateway -m 0644     ~/cubie/deploy/stackchan-notify.yml     /var/lib/stackchan-gateway/.config/stackchan-mcp/notify.yml
+d=/var/lib/stackchan-gateway
+owner=$(stat -c '%U:%G' "$d")          # derive it; do not guess a username
+sudo install -d -o "${owner%:*}" -g "${owner#*:}" "$d/.config/stackchan-mcp"
+sudo install -o "${owner%:*}" -g "${owner#*:}" -m 0644 \
+    ~/cubie/deploy/stackchan-notify.yml "$d/.config/stackchan-mcp/notify.yml"
 sudo systemctl restart stackchan-gateway
 ```
+
+The owner is **derived, not named**. An earlier version of these lines invented
+a `stackchan-gateway` user, which does not exist — `install: invalid user`. The
+gateway's `StateDirectory` is owned by whatever its unit runs as, and
+`systemctl show -p User --value stackchan-gateway` reports that; deriving it
+from the directory is correct whatever the answer turns out to be.
 
 ### Teaching the gateway this fleet's tools
 
