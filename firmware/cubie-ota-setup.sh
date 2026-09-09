@@ -107,8 +107,15 @@ echo "published to $DEST"
 echo "  version : $VERSION   (read from the image, not typed)"
 echo "  size    : $(stat -c%s "$DEST/firmware.bin") bytes"
 echo
-echo "The office serves this once AGENTHUB_CUBIE_FIRMWARE_DIR=$DEST is set"
-echo "and PR #409 is merged."
+echo "The office serves this once BOTH of these are set on office-server and it"
+echo "has been restarted:"
+echo "  AGENTHUB_CUBIE_FIRMWARE_DIR=$DEST"
+echo "  AGENTHUB_COMPANION_TOKEN=..."
+echo
+echo "Both, not either: httpServer.ts mounts Cubie's OTA route pair only when it"
+echo "has a companion token AND a firmware directory, so setting the directory"
+echo "alone publishes into a route that was never registered -- a 404 that looks"
+echo "like a bad path rather than a missing token."
 PUB
 chmod +x "$HOME/publish-cubie-firmware.sh"
 

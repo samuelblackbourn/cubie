@@ -52,7 +52,7 @@ No PIL dependency. Rendered in 320x240 library space at 2x, then box-
 downsampled to 160x120, which mirrors the upstream converter's own pipeline.
 """
 
-import hashlib, math, struct, sys, zlib
+import hashlib, struct, sys, zlib
 from pathlib import Path
 
 W, H = 160, 120                  # output frame

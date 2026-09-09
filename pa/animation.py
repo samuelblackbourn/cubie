@@ -40,10 +40,10 @@ deliberately so: a dance's signature is its sequence, not one exact aperture.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import units
-from chan import EYES, LEFT_EYE, MOUTH, RIGHT_EYE
+from chan import LEFT_EYE, MOUTH, RIGHT_EYE
 
 
 @dataclass(frozen=True)

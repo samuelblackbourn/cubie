@@ -26,8 +26,10 @@ proving nothing -- which is exactly what happened on 2026-09-05: a checkout 2.5
 weeks stale passed cleanly while `main` had grown two fields.
 
 So when `$VO_REPO` is a git checkout, this reports the commit it compared against,
-and **exits 2 if that checkout is behind its remote**. A stale comparison is a
-"could not check", not a pass. This is the same reasoning that made exit 2 distinct
+and **exits 2 if that checkout is behind its remote** -- asking the remote with
+`ls-remote` rather than reading the local `origin/main`, which is itself only as
+fresh as the last fetch and so would reproduce the same blind spot. A stale
+comparison is a "could not check", not a pass. This is the same reasoning that made exit 2 distinct
 in the first place: the dangerous answer is not "it changed", it is "I did not
 really look".
 
@@ -86,18 +88,67 @@ def describe_checkout(repo: str) -> str:
 
     Comparing against stale bytes and reporting "in sync" is worse than any drift
     this script can find, because it is indistinguishable from success.
+
+    --- Why this asks the remote rather than reading `origin/main` ---
+
+    The first version of this compared `HEAD..origin/main`, which is the wrong
+    question: `origin/main` is a LOCAL ref, only as fresh as the last fetch. A
+    checkout nobody has fetched in a fortnight has an `origin/main` that is
+    equally old, `rev-list --count` returns 0, and the guard reports "in sync"
+    -- which is precisely the 2026-09-05 failure it was added to prevent, moved
+    up one level rather than fixed.
+
+    So the remote is asked directly, with `ls-remote`. That needs the network
+    and (Virtual-Office being private) credentials, and when it cannot be
+    reached this is an infra failure rather than a pass: "I could not look" is
+    the answer, and exit 2 is what says so.
+
+    Read-only on purpose. A `git fetch` would also work and would be simpler,
+    but this script is a guard on someone else's checkout, and a guard that
+    mutates the tree it is inspecting is a guard people stop running.
     """
     head = git(repo, "rev-parse", "--short", "HEAD")
     if head is None:
         return ""  # not a git checkout; nothing to verify staleness against
-    upstream = git(repo, "rev-parse", "--abbrev-ref", "HEAD@{upstream}") or "origin/main"
-    behind = git(repo, "rev-list", "--count", f"HEAD..{upstream}")
-    if behind and behind.isdigit() and int(behind) > 0:
+
+    upstream = git(repo, "rev-parse", "--abbrev-ref", "HEAD@{upstream}")
+    if upstream and "/" in upstream:
+        remote, _, branch = upstream.partition("/")
+    else:
+        remote, branch, upstream = "origin", "main", "origin/main"
+
+    listing = git(repo, "ls-remote", remote, f"refs/heads/{branch}")
+    if listing is None:
         fail_infra(
-            f"{repo} is at {head}, {behind} commit(s) behind {upstream}. "
-            f"Comparing against a stale checkout proves nothing -- "
-            f"run `git -C {repo} fetch && git -C {repo} checkout {upstream}` first."
+            f"could not reach {remote} from {repo} to check whether {head} is "
+            f"current. A stale comparison proves nothing, so this is not a pass."
         )
+    if not listing:
+        fail_infra(f"{remote} has no branch {branch}, so {head} cannot be checked")
+
+    remote_sha = listing.split()[0]
+
+    # Not present locally at all -> the checkout is definitely behind, and no
+    # amount of local git can tell us by how much.
+    if git(repo, "cat-file", "-e", f"{remote_sha}^{{commit}}") is None:
+        fail_infra(
+            f"{repo} is at {head}, and {upstream} is now {remote_sha[:7]}, which "
+            f"this checkout has never seen. Comparing against a stale checkout "
+            f"proves nothing -- run `git -C {repo} fetch && "
+            f"git -C {repo} checkout {upstream}` first."
+        )
+
+    # Present, so we can say how far behind. `--is-ancestor` communicates
+    # through its exit status, which `git()` reports as None.
+    if git(repo, "merge-base", "--is-ancestor", remote_sha, "HEAD") is None:
+        behind = git(repo, "rev-list", "--count", f"HEAD..{remote_sha}") or "?"
+        fail_infra(
+            f"{repo} is at {head}, {behind} commit(s) behind {upstream} "
+            f"({remote_sha[:7]}). Comparing against a stale checkout proves "
+            f"nothing -- run `git -C {repo} fetch && "
+            f"git -C {repo} checkout {upstream}` first."
+        )
+
     return f" @ {head}"
 
 
