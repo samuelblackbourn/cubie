@@ -597,19 +597,35 @@ reads like a resource problem and is a missing file.
 Then, for touch to reach him at all — it is off by default:
 
 ```
-d=/var/lib/stackchan-gateway
-owner=$(stat -c '%U:%G' "$d")          # derive it; do not guess a username
-sudo install -d -o "${owner%:*}" -g "${owner#*:}" "$d/.config/stackchan-mcp"
-sudo install -o "${owner%:*}" -g "${owner#*:}" -m 0644 \
-    ~/cubie/deploy/stackchan-notify.yml "$d/.config/stackchan-mcp/notify.yml"
+bash ~/cubie/deploy/install-notify.sh
 sudo systemctl restart stackchan-gateway
 ```
 
-The owner is **derived, not named**. An earlier version of these lines invented
-a `stackchan-gateway` user, which does not exist — `install: invalid user`. The
-gateway's `StateDirectory` is owned by whatever its unit runs as, and
-`systemctl show -p User --value stackchan-gateway` reports that; deriving it
-from the directory is correct whatever the answer turns out to be.
+**A script, because two attempts at doing it by hand both failed on a guess.**
+The first named a `stackchan-gateway` user that does not exist — the gateway
+runs as the same user as everything else. The second installed the file under
+`$HOME/.config/stackchan-mcp/`, where `$HOME` is whatever the unit's drop-in
+says: deployment state that lives on one machine and is written down nowhere.
+
+So both paths are set **explicitly** instead, using overrides the gateway
+already provides:
+
+| variable | what it does |
+| --- | --- |
+| `STACKCHAN_NOTIFY_CONFIG` | where to read `notify.yml` from |
+| `STACKCHAN_EVENTS_PATH` | where to append the JSONL event log |
+
+The first earns its place beyond removing the guess: when it points at a
+missing file the gateway logs *"STACKCHAN_NOTIFY_CONFIG points to a
+non-existent file"*, where the `HOME`-relative default just silently finds
+nothing and looks identical to a device that is not reporting. **A wrong path
+that says so beats a right path that might not be.**
+
+The script reads `User=` off the unit rather than assuming, checks the account
+exists before handing it to `install` — `install -o` otherwise dies with a bare
+`invalid user`, which is what sent this round twice — and appends to the
+gateway's env file only what is missing, never rewriting it, because that file
+carries the token.
 
 ### Teaching the gateway this fleet's tools
 
