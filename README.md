@@ -19,6 +19,13 @@ Build phases are S0–S5 there; this repo is S2 onward.
 | S1c — OTA from the office | **Done.** `build` → `publish` → reset. No cable |
 | S2 — bridge, Rung 1 (posture mirrors the office) | **Written**, `bridge/`. Not yet deployed |
 
+Four things were merged on reasoning rather than a result — firmware that cannot
+be compiled in the sandbox, a Kconfig symbol read off `master` because the
+tagged esp-sr was unreachable, and a device-side VAD traced through the source
+but never watched fire. Those are written down as checks in
+[`HARDWARE-CHECKS.md`](HARDWARE-CHECKS.md), in the order that makes a failure
+diagnosable, rather than left to turn into folklore.
+
 ## Building the firmware
 
 ```

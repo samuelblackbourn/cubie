@@ -412,6 +412,26 @@ def test_the_event_log_path_matches_what_the_installer_configures():
     assert str(live.DEFAULT_EVENT_LOG) == match.group(1)
 
 
+def test_the_notify_config_does_not_disagree_about_the_path():
+    """A third copy of the same path. STACKCHAN_EVENTS_PATH wins over this key
+    in the gateway's own resolver, so a mismatch is harmless *while the env var
+    is set* -- and becomes the events-in-a-file-nobody-reads failure the moment
+    it is not. A config file whose plain reading contradicts the deployed truth
+    is worth nothing, so the agreement is asserted rather than assumed."""
+    import re
+
+    import live
+
+    config = (
+        Path(live.__file__).resolve().parent.parent
+        / "deploy"
+        / "stackchan-notify.yml"
+    ).read_text()
+    match = re.search(r"^\s*path:\s*(\S+)\s*$", config, re.M)
+    assert match, "could not find the jsonl path in stackchan-notify.yml"
+    assert match.group(1) == str(live.DEFAULT_EVENT_LOG)
+
+
 def test_the_installer_also_pins_the_path_for_the_character_service():
     """Matching defaults are not enough on their own: the gateway's path is
     configurable, so when it is set explicitly the tailing end must be told."""
