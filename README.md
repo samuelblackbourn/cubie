@@ -351,26 +351,45 @@ a person notices movement rather than an attitude.
 
 Three things this cost that were not obvious, all of which failed silently:
 
-**Keyframes are absolute poses, and a gesture fires while idle motion has the
-head wherever it last looked** — `idle.py` reaches yaw ±50 and pitch 25–55. A
-nod's dip is the absolute pose "pitch 33"; from a head already at 25 that is a
-*rise*, so the gesture did not start off-centre, it **inverted**. Every sequence
-now opens with a 400 ms settle to rest with enough speed to arrive from the far
-corner, and a test walks every gesture from all four corners of that envelope.
+**Keyframes are absolute poses, and a gesture fires while the head is wherever
+idle motion last left it.** A nod's dip is the absolute pose "pitch 33"; from a
+head already lower than that it is a *rise*, so the gesture did not start
+off-centre, it **inverted**. Every sequence now opens with a 500 ms settle to
+rest, fast enough to arrive from anywhere the servos reach.
 
-**A frame must be given the speed to arrive.** 30 degrees in 200 ms needs
-150 dps; command less and the next keyframe interrupts the move part-way, so the
-gesture is shallower than it reads on the page and nothing reports it. Asserted
-per keyframe. M5's `PANIC` deliberately fails the same check — its 40-degree
-reversals in 100 ms want 400 dps against a 240 ceiling — and that is *why* it
-reads as frantic, so the check covers our gestures only and a test pins the
-exemption rather than leaving it as a comment.
+The envelope is the **servo range**, not a narrower idle envelope, and getting
+that wrong is how the settle came to be 30° short on its first attempt. The
+comment claimed "idle.py reaches yaw ±50 and pitch 25–55" — which is what three
+of idle's four actions do in isolation, but `_small_observation` is *relative*,
+so the walk compounds and is bounded only by the clamp. Simulated over 300 seeds
+× 500 actions it reaches |yaw| 87.5 and pitch 6.1–80.5. A nod from a head idle
+had walked down to pitch 6 still inverted — the exact bug the settle exists to
+fix, surviving in the tail because the envelope was asserted from a reading
+instead of measured.
+
+**A frame must be given the speed to arrive.** 30° in 200 ms needs 150 dps;
+command less and the next keyframe interrupts the move part-way, so the gesture
+is shallower than it reads on the page and nothing reports it. Asserted per
+keyframe, for gestures only: M5's dances are a mixed bag we did not write, and
+`PANIC` depends on *not* arriving — its 40° reversals in 100 ms want 400 dps
+against a 240 ceiling, which is exactly why it reads as frantic. A test records
+which of their four can arrive rather than claiming panic is the only one that
+cannot, which is what an earlier version of it said.
 
 **`Chan.remove` runs no teardown.** Nothing had ever removed a *running* dance,
 so it never mattered; one gesture replacing another does. Without
 `DanceModifier.abandon`, blink stayed suspended and the eye weight stayed pinned
 where the interrupted keyframe left them — one nod cut off by another and he
 never blinks again.
+
+**And releasing an axis host-side does not release it on the device.** Setting
+`weight = None` stops *us* driving it; the board keeps every feature override it
+was given until an expression change drops them, and the flush only re-sends
+`set_avatar` when the face *name* changed. So a gesture ending on the same face
+left the eyelids pinned where its last keyframe put them, flattening all six
+expressions to one eyelid position — which is precisely the defect
+`firmware/fix-eye-weight.sh` fixed once already. The teardown now re-asserts the
+face, which is the only thing that clears them.
 
 `glance` fires **once per waiting episode, at the first moment he is standing
 by** — not once per poll, and not only on the poll that carries the transition.
