@@ -44,7 +44,7 @@ import random
 import animation
 import idle
 import units
-from chan import EYES, LEFT_EYE, MOUTH, RIGHT_EYE, Chan, Modifier, nearest_mouth_shape
+from chan import LEFT_EYE, MOUTH, RIGHT_EYE, Chan, Modifier
 from tracking import PITCH_MAX, PITCH_MIN, REST_PITCH, REST_YAW, YAW_MAX, YAW_MIN, Pose, clamp
 
 

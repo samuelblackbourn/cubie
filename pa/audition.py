@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from urllib.request import urlopen
 
-from character import CHARACTERS, ORDER, Character, resolve
+from character import CHARACTERS, ORDER, Character
 from speech import PiperSynthesizer, SpeechError, speak
 
 logger = logging.getLogger(__name__)

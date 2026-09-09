@@ -62,8 +62,34 @@ device.
 Pull-based, deliberately. A self-hosted GitHub Actions runner would be faster
 but costs a long-lived GitHub credential on office-server and a runner service
 that can fail on its own. Polling a git remote needs no inbound access and no
-secret, and survives office-server's address changing — which is not
-hypothetical, since that address is a DHCP lease baked into the firmware.
+secret, and survives office-server's address changing — which was not
+hypothetical, because a DHCP lease used to be baked into the firmware.
+
+### Where the robot looks for the office
+
+`OFFICE_HOST` is **`office-server.local`**, a name rather than an address.
+`192.168.0.84` was a DHCP lease: fine until the router hands out a different
+one, at which point OTA stops with no symptom on the device and nothing to
+notice except an update that silently never arrives.
+
+The cost is a resolution step that an address does not have. `.local` is mDNS,
+so `CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y` is set **explicitly** in `build.sh`
+rather than left to the pinned IDF's default — a default is not a decision, and
+if the symbol has moved the build says so where the device otherwise would not.
+`make check-config` asserts the two travel together: a `.local` URL without the
+mDNS option is a failure, verified by removing it.
+
+What it does **not** cost, since this was overstated once: `CONFIG_OTA_URL` is
+the *update* path only. If the name stops resolving he keeps running exactly as
+he is and stops taking over-the-air updates until the cable comes out — the same
+cable he was first flashed with. A lost convenience, not a dead robot.
+
+An address is always still available, which matters most when resolution is the
+thing that broke:
+
+```
+OFFICE_HOST=192.168.0.84 bash ~/cubie/firmware/build.sh
+```
 
 **Prerequisite:** `sam` must run docker without sudo, i.e. be in the `docker`
 group. That is equivalent to root on this machine, so it is a deliberate trade
@@ -909,6 +935,21 @@ No CI, by design — same call as the sibling device repos. The bar is `make che
 VO_REPO=/path/to/virtual-office make check
 ```
 
+`VO_REPO` defaults to `~/virtual-office`, which is where the office's checkout
+lives on office-server. It used to default to a sandbox path, so the default was
+wrong on every machine the bar is actually run on.
+
+The bar is five checks: `check-contract`, `check-lint`, `check-bridge`,
+`check-pa`, `check-config`.
+
+`check-lint` is pyflakes over every `.py` in the repo, and **only** pyflakes:
+one question — is any name here undefined or unused — with no style opinions to
+configure, argue about or silence. It earns its place on evidence. Two real
+defects had this exact shape: `Pose` and `Any` used in annotations that were
+never imported (harmless under PEP 563, but `get_type_hints` raises), and five
+stale imports that accumulated while nothing was watching, two of which survived
+a file being rewritten around them.
+
 `check-contract` exit codes: **0** in sync, **1** drifted, **2** could not check.
 
 That third one is load-bearing twice over. Treating "I could not look" as "no drift"
@@ -916,6 +957,15 @@ makes the guard decoration — and **a checkout behind its own remote is exit 2 
 because comparing against stale bytes proves nothing. That is not hypothetical: on
 2026-09-05 the K10's copy of this guard passed cleanly against a working tree 35
 commits behind `main`, while `main` had grown two fields it knew nothing about.
+
+**And the first version of that staleness check had the same blind spot it was
+written to close.** It compared `HEAD..origin/main` — but `origin/main` is a
+*local* ref, only as fresh as the last fetch, so a checkout nobody had fetched
+in a fortnight had an equally old `origin/main`, counted zero commits behind,
+and passed. It now asks the remote directly with `ls-remote`, which needs
+network and credentials; when it cannot reach them that is exit 2, not a pass.
+Read-only on purpose — a guard that fetches into someone else's checkout is a
+guard people stop running.
 
 ## Touch, and why it took three attempts
 
