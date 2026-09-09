@@ -14,7 +14,7 @@ specific.
 
 **Order matters.** 1–3 put the new firmware on the device and the host wiring
 in place; nothing downstream is meaningful until those pass. 4–8 are the
-device behaviours that were reasoned about and never seen. 9–11 are the
+device behaviours that were reasoned about and never seen. 9–12 are the
 end-to-end path. A failure in an early check invalidates the later ones rather
 than merely delaying them — so stop at the first red and report it.
 
@@ -132,7 +132,9 @@ string, which is the whole premise of choosing MultiNet6.
 Say **"hi cubie"** from normal talking distance.
 
 **Pass:** he enters listening — the LED ring and the recording indicator, the
-same states a screen touch produces.
+same states a screen touch produces. With the hook receiver in place he should
+then *answer*; if he wakes but never speaks, that is check 6 or the receiver
+rather than the wake word, so record which half worked.
 
 **If it fails:** report which of these it is, because they are different fixes.
 
@@ -244,6 +246,51 @@ frantic or sluggish.
 slow" is enough for me to correct it. This is the only entry here where the
 right answer is a matter of taste.
 
+## 12. The wake word actually answers
+
+**Proves:** the receiver and the gateway meeting — the one thing about
+`pa/hook.py` that cannot be tested without both. Everything up to the socket is
+covered by tests; what is not is whether the gateway's POST arrives, is
+authorised, and holds audio the borrowed recogniser can read.
+
+This check only means something once 5 and 6 pass. Say "hi cubie", ask him
+something about the office, and stop talking.
+
+**Pass:** he answers out loud, without being touched.
+
+**If it fails, the logs separate the cases, and they are different faults:**
+
+```bash
+journalctl -u stackchan-gateway --since '3 min ago' --no-pager | grep -i -e listen -e hook
+journalctl -u cubie-character --since '3 min ago' --no-pager | tail -30
+```
+
+- **"device-driven listen.start ignored (STACKCHAN_AUDIO_HOOK_URL not
+  configured)"** — the gateway was never told where to POST. Re-run
+  `bash ~/cubie/deploy/install-notify.sh` and restart the gateway.
+- **Connection refused, on the gateway side** — the URL is set but nothing is
+  listening. The character stack said why at startup: either `audio hook is not
+  listening` (a bound port) or `wake-word audio cannot be transcribed` (the
+  gateway's `[stt]` extra is missing, which would also mean tap-to-talk has
+  never worked).
+- **A 401, on the gateway side** — the two ends disagree about the token. They
+  should not: nothing sets `STACKCHAN_AUDIO_HOOK_TOKEN`, so both fall back to
+  the `STACKCHAN_TOKEN` they already share. If one *is* set, that is the thing
+  to remove.
+- **`capture refused ... CRC`** in the character log — the body arrived
+  mangled. Deliberately not transcribed, because whisper would turn the noise
+  into words and the brain would act on them. Send the line.
+- **He answers, but slowly.** Transcription is most of it. The model is the
+  gateway's own, so `STACKCHAN_FASTER_WHISPER_MODEL` moves both listeners at
+  once — `tiny.en` is the next thing to try, and it costs accuracy.
+
+**Also worth trying while you are there:** touch the LCD, speak, touch it
+again. The gateway sends device-driven captures down this same path however
+they started, so that should now produce a turn too — ending on the second
+touch, because that path is manual-stop by design. It is not a separate
+feature, and if it works while the wake word does not, that is evidence the
+receiver is sound and the recogniser is not hearing his name.
+
 ---
 
 ## Not on this list, and why
@@ -252,10 +299,10 @@ right answer is a matter of taste.
   patch chain runs against a real fetched tree and the inserted C++ compiles
   under ASAN and UBSan with behavioural assertions, which is what caught the
   silent no-op on a half-given feature position. `make check` is the bar.
-- **The hook receiver.** The wake path POSTs audio to
-  `STACKCHAN_AUDIO_HOOK_URL` and nothing serves it yet. Checks 5–7 are its
-  prerequisites: a receiver is only worth writing against a device that
-  reliably starts and ends a capture on its own.
+- **The hook receiver.** Now built (`pa/hook.py`), and tested over a real
+  socket with no robot — including a round-trip against the gateway's own Ogg
+  packer, which is the producer of every body it will ever see. What hardware
+  adds is the two ends meeting, which is check 12.
 - **Screen-touch behaviour.** Touching the LCD records until you touch it
   again. That is `ToggleChatState` setting `kListeningModeManualStop`, and the
   auto-stop patch deliberately leaves manual-stop captures alone — a held

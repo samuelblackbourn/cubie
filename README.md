@@ -815,15 +815,76 @@ So there is nothing left in M5's tree to port for the conversation itself. The
 missing piece was never theirs — it is that **we** have to be the server side
 of that loop, which is what the gateway plus a hook receiver are.
 
+### The hook receiver — what happens after the wake word
+
+`pa/hook.py` serves `STACKCHAN_AUDIO_HOOK_URL`. Until it existed the gateway
+logged *"device-driven listen.start ignored (STACKCHAN_AUDIO_HOOK_URL not
+configured)"* and **dropped every frame** — so the wake word could wake him and
+nothing could come of it. Two listeners now, and they are not equivalent:
+
+|  | starts on | ends on |
+| --- | --- | --- |
+| `listen` tool (tap) | us | a fixed window, always waited out |
+| the hook (wake word) | the device | the device's **own VAD** |
+
+The hook path is the better listener, which was the whole point: five seconds
+of window plus about 2.3 s of transcription is most of the latency in a turn,
+and most of that window is usually silence.
+
+`listen` stays anyway, because **it is the only listener we can start.**
+Nothing in the gateway's tool table makes the device begin listening — checked
+against the table, not assumed — so a tap has nothing else to call, and a
+follow-up question still needs the wake word again.
+
+The path, and where each piece lives:
+
+```
+device VAD stops -> gateway packs Ogg -> POST -> hook.py -> ogg_opus.py
+   -> the gateway's own faster-whisper -> Conversation.turn_on_transcript
+```
+
+**It borrows the gateway's recogniser rather than loading a second one.**
+`transcribe.py` pulls `faster-whisper` out of `stackchan_mcp.stt`'s registry —
+one model, one cache, one set of settings, and `STACKCHAN_FASTER_WHISPER_MODEL`
+keeps working because it is the engine's own variable. A transcript from the
+wake word therefore *matches* a transcript from a tap instead of merely
+resembling it.
+
+**It answers 202 before doing the work.** `push_audio_capture` gives the POST a
+10 second total timeout and a turn is transcription plus a model call plus
+speech, so holding the connection would make every *successful* turn appear in
+the gateway's log as a failed push. The honest consequence: a 202 means
+"received", not "understood" — nothing the receiver returns can report a failed
+transcription, so those are the character stack's to log.
+
+**No new secret.** The gateway signs the POST with
+`STACKCHAN_AUDIO_HOOK_TOKEN`, falling back to the `STACKCHAN_TOKEN` both ends
+already share, so the receiver checks against the token it already has. The
+installer sets the URL and deliberately not a token: a second secret to keep in
+step would only add a way for them to disagree.
+
+**It is stdlib-only, on a thread.** `aiohttp` is in the gateway's virtualenv,
+but importing it would put the receiver out of reach of `pa/.venv`, where the
+tests run — and the tests are worth more, because they drive the whole thing
+over a real socket with no robot, no gateway and no model.
+
+**A mangled body is refused, not transcribed.** Every Ogg page carries a CRC;
+whisper turns noise into words happily, and the brain would then act on a
+sentence nobody said.
+
+**The LCD touch goes down this path too.** The gateway treats wake word, button
+and `ToggleChatState` alike, so touching the screen now produces a turn as
+well — one that ends when you touch it again, because that path is
+manual-stop by design.
+
 ### What is not built yet
 
-**The hook receiver.** The wake path delivers audio to
-`STACKCHAN_AUDIO_HOOK_URL`, and nothing serves that webhook yet.
-
-That hook path is also the better listener: it uses the device's **own VAD** and
-stops when you stop speaking, where the `listen` tool always waits its full
-window. Five seconds of window plus about 2.3 s of transcription is most of the
-latency in a turn, and most of that window is usually silence.
+**A follow-up turn without the wake word.** He answers and stops; carrying on
+means saying "hi cubie" again. The device's VAD cannot be re-armed from the
+host — there is no tool for it — so the options are a fixed-window `listen`
+after each answer (the worse listener, and it would record the room whether or
+not anyone meant to continue) or a firmware change. Deliberately unresolved
+until the single-turn path has been used on hardware.
 
 ### Configuration
 

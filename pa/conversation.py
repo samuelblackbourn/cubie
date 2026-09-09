@@ -1,5 +1,12 @@
 """One exchange: listen, think, answer, act.
 
+Two ways in, one exchange. A tap records for a window and then answers
+(`turn`); the wake word arrives with the words already captured on the device
+and answers directly (`turn_on_transcript`). Everything after the transcript --
+the busy rule, the thinking face, the speaking status, standby in the
+`finally` -- is deliberately shared, because two nearly-identical paths are two
+places for a fix to be applied to only one.
+
 Orchestration only. Everything it touches is injected, so the whole flow is
 testable with no robot, no model and no network -- which matters because the
 real thing takes about five seconds per turn and involves three processes.
@@ -45,10 +52,12 @@ import driver as driver_mod
 
 logger = logging.getLogger(__name__)
 
-#: How long to record when he is asked something. The device's own VAD would
-#: be better -- it stops when you stop -- but that path delivers audio to a
-#: webhook we do not serve yet, so this is a fixed window. Five seconds
-#: measured about 2.3 s of transcription on top with the `base` model.
+#: How long to record when he is asked something -- the TAP path only. The
+#: wake word uses the device's own VAD instead, which ends the capture when the
+#: speaker stops (`hook.py`), and a tap cannot: nothing in the gateway's tool
+#: table makes the device start listening, so tap-to-talk has only the fixed
+#: window to call. Five seconds measured about 2.3 s of transcription on top
+#: with the `base` model.
 DEFAULT_LISTEN_MS = 5000
 
 #: What he says when he heard nothing at all. Silence would be indistinguishable
@@ -97,15 +106,43 @@ class Conversation:
         self.turns = 0
 
     async def turn(self, now: float = 0.0) -> TurnResult:
+        """A turn we drive: record for a window, then answer."""
+        return await self._exchange(lambda: self._turn(now), "tap")
+
+    async def turn_on_transcript(
+        self, transcript: str | None, now: float = 0.0
+    ) -> TurnResult:
+        """A turn the DEVICE drove: the words are already in hand.
+
+        The wake-word path captures on the device, ends on the device's own
+        VAD, and arrives here as a finished transcript -- so there is nothing
+        to listen for, and no LISTENING status either. He stopped listening
+        before we knew he had started, and showing a listening face after the
+        fact would be a lie about what he is doing.
+
+        Everything downstream is deliberately identical to a tap: same busy
+        rule, same thinking face, same STANDBY in the `finally`. Two ways in,
+        one exchange -- otherwise the two paths drift and only one gets fixed.
+        """
+        return await self._exchange(
+            lambda: self._respond(transcript, now), "capture"
+        )
+
+    async def _exchange(self, body, source: str) -> TurnResult:
         if self.busy:
             # Almost always someone tapping again because nothing appeared to
             # happen. Two `listen` calls would fight for one microphone.
-            logger.info("tap ignored: already mid-conversation")
+            #
+            # It guards the wake word too, and there it is doing more than
+            # politeness: `listen()` and a device-driven capture share one
+            # recording slot in the gateway, and it drops whichever arrives
+            # second. Refusing here means we know that happened.
+            logger.info("%s ignored: already mid-conversation", source)
             return TurnResult(skipped="busy")
 
         self.busy = True
         try:
-            return await self._turn(now)
+            return await body()
         finally:
             self.busy = False
             # Back to standby whatever happened, or he stays frozen mid-thought
@@ -116,6 +153,9 @@ class Conversation:
     async def _turn(self, now: float) -> TurnResult:
         self._character.set_status(driver_mod.LISTENING)
         transcript = await self._listen(self.listen_ms)
+        return await self._respond(transcript, now)
+
+    async def _respond(self, transcript: str | None, now: float) -> TurnResult:
         if not transcript or not transcript.strip():
             self._character.set_status(driver_mod.SPEAKING)
             await self._say(NOTHING_HEARD)
