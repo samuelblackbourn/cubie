@@ -249,7 +249,11 @@ NOD = (
 
 #: No. Yaw only, 15 degrees each way, three crossings and back to centre. The
 #: widest single move is 30 degrees, half the 60 that upstream's known-issues
-#: list warns can hang the servo bus on an abrupt reversal.
+#: list warns can hang the servo bus on an abrupt reversal -- and yaw is the
+#: axis with NO stall protection in M5's HAL, so a wide fast reversal there
+#: stalls against the mechanical stop undetected. See `MAX_GESTURE_TRAVEL_DEG`
+#: in the tests for the mechanism; of every number in this file, this is the
+#: one with a hardware consequence rather than an aesthetic one.
 SHAKE = (
     _settle(),
     _kf((0, 0, 0, EYES_OPEN), (0, 0, 0, MOUTH_CLOSED), (-150, 700), (0, 700), 200),

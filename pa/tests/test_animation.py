@@ -388,10 +388,28 @@ def test_lookup_finds_both_kinds_and_names_everything_when_it_cannot():
 #: held that as MAX_YAW_TRAVEL = 60, bounding the DELTA rather than the
 #: magnitude; with the bridge gone this and `tracking.MAX_STEP_DEG` are the only
 #: surviving records, and `MAX_STEP_DEG` is enforced solely inside
-#: `step_toward` / `step_to_rest`, which have no production callers.
+#: `step_toward` / `step_to_rest`, which have no production callers. So nothing
+#: in the live path bounds a reversal but this.
 #:
-#: So nothing in the live path bounds a reversal, and 30 is chosen as half of
-#: upstream's example rather than derived. It is a budget, not a measurement.
+#: 30 is half of upstream's example: a budget, not a measurement. But the
+#: MECHANISM behind it was read out of M5's servo HAL at the pinned commit
+#: rather than taken on trust, and it is worse than "the bus can hang":
+#:
+#:   - **Yaw has no stall protection at all.** `hal_servo.cpp` sets
+#:     `enablePwmMode` and never `enableStallProtection`, and the stall check
+#:     returns immediately for that axis. A wide fast reversal, or a pose past
+#:     the physical range, stalls the servo against its stop with no detection
+#:     and no back-off. This is the one path in the whole animation system that
+#:     can actually cook hardware.
+#:   - **Pitch has stall protection, and tripping it is not free either.**
+#:     `handle_stall` permanently SHRINKS that servo's angle limit for the rest
+#:     of the session, reset only by `init()`. One gesture that stalls pitch
+#:     quietly reduces the range of every gesture afterwards until reboot, and
+#:     says so only in a `tagWarn`.
+#:
+#: Which is why this is asserted for every gesture from every starting corner
+#: rather than trusted to good sense: the failure is silent, and on the yaw axis
+#: it is mechanical.
 MAX_GESTURE_TRAVEL_DEG = 30.0
 
 
