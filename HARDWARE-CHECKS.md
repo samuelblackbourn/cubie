@@ -33,11 +33,31 @@ it, Kconfig will say so here and nowhere else.
 
 ```bash
 bash ~/cubie/firmware/build.sh --check
-bash ~/cubie/firmware/build.sh
+bash ~/cubie/firmware/build.sh 2>&1 | tee ~/cubie-build.log
 ```
 
-**Pass:** `--check` reports the patch chain and the config entries it would
-set; the real run compiles and publishes an OTA image.
+**Pass:** `--check` prints the configuration and the tree's state, then exits;
+the real run compiles and publishes an OTA image.
+
+⚠️ **`--check` does NOT print the config entries.** It exits before both the
+patch chain and the `sdkconfig_append` step, so what it shows is the pins, the
+office URL, the toolchain, whether the tree is at the pin, and what is locally
+modified — nothing about what the config would become. This entry used to claim
+it "reports the patch chain and the config entries it would set", which sent me
+looking for four lines in an output that cannot contain them.
+
+The config entries appear in the REAL run's `sdkconfig_append` block, which is
+also the only place `CONFIG_SR_MN_EN_MULTINET6_QUANT` is ever exercised. Hence
+the `tee`: a Kconfig failure happens minutes into a container build, and losing
+it to scrollback costs the whole run.
+
+**Expected in `--check`, and not a problem:**
+
+- A list of local modifications on an already-built tree. The chain is
+  idempotent and re-applies over itself.
+- `stackchan.cc.orig` among the untracked files. That is deliberate —
+  `apply-live-avatar-step2.sh` does `cp -n "$SC" "$SC.orig"` to keep one
+  pristine copy. It is not a leftover from a failed patch.
 
 **If it fails:**
 
