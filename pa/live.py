@@ -409,6 +409,33 @@ async def _read_office(client) -> "office_mod.OfficeState | None":
     return state
 
 
+#: How often to read the office for the ambient mood. The bridge polled at its
+#: own interval; this is the same job, and the office caps its own cost rather
+#: than relying on us to. Slow on purpose: an approval that shows up on his ring
+#: fifteen seconds late is fine, and a robot hammering the office to look
+#: attentive is not.
+OFFICE_POLL_S = 15.0
+
+
+async def poll_office_mood(client, character, interval_s: float = OFFICE_POLL_S) -> None:
+    """Keep his resting face and ring reflecting the office.
+
+    Failure is a reading, not an error: `_read_office` returning None becomes
+    the `offline` mood -- amber and a thinking face -- because "I cannot see
+    the office" is exactly the thing an ambient signal should show. Holding the
+    last good mood instead would be the worst of the options, since a stale
+    green ring is indistinguishable from a calm office.
+    """
+    while True:
+        try:
+            character.set_office_mood(await _read_office(client))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a bad poll must not end the loop
+            logger.warning("office poll raised: %r", exc)
+        await asyncio.sleep(interval_s)
+
+
 async def tail_events(path: Path, on_event) -> None:
     """Follow the gateway's JSONL event log, from the end.
 
@@ -611,6 +638,15 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
 
             drain = asyncio.create_task(effector.drain())
             tail = asyncio.create_task(tail_events(event_log, on_event))
+            # The office on his resting face. Only when there is an office
+            # client to ask -- without a key there is no conversation either,
+            # and a mood poll on its own would be a robot reacting to news it
+            # cannot discuss.
+            mood_poll = (
+                asyncio.create_task(poll_office_mood(office_client, character))
+                if conversation is not None
+                else None
+            )
             try:
                 while True:
                     character.update(time.monotonic() - start)
@@ -618,7 +654,9 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
             finally:
                 if receiver is not None:
                     receiver.stop()
-                for task in (drain, tail):
+                for task in (drain, tail, mood_poll):
+                    if task is None:
+                        continue
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await task

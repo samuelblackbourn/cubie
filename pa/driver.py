@@ -43,6 +43,7 @@ import logging
 import random
 
 import modifiers
+import mood as mood_mod
 import units
 from chan import FACES, Chan
 from tracking import REST_PITCH, REST_YAW, Pose
@@ -126,6 +127,10 @@ class CharacterDriver:
 
         self.status: str | None = None
         self.sleeping = False
+        #: The last office reading, or None until one arrives. Held rather than
+        #: applied on receipt, so a poll landing mid-conversation waits for
+        #: STANDBY instead of being dropped -- see `set_office_mood`.
+        self.office_mood: "mood_mod.Mood | None" = None
         #: The last tick's clock, so an event arriving between ticks has a
         #: sensible `now` to schedule motion against. Events are asynchronous
         #: and the alternative -- making every caller pass a timestamp -- puts
@@ -219,6 +224,13 @@ class CharacterDriver:
             self.chan.face.leds = led
 
         if is_idle:
+            # Handing the ring and the face to the office, now that the
+            # conversation has finished with them. Only here: while listening or
+            # speaking the status owns both, and a mood asserting itself
+            # mid-answer would be two things driving one axis.
+            self._apply_office_mood()
+
+        if is_idle:
             self._start_idle()
         else:
             self._stop_idle()
@@ -278,6 +290,38 @@ class CharacterDriver:
                 REST_YAW, REST_PITCH, units.m5_speed_to_dps(80), self._now
             )
         return face
+
+    # -------------------------------------------------------- office mood --
+    def set_office_mood(self, state) -> str:
+        """Take a fresh reading of the office. Returns the reason chosen.
+
+        Stored whatever the status is, applied only while STANDBY -- so a
+        reading that arrives mid-conversation is not lost, it just waits for
+        him to finish talking. Dropping it instead would mean the ring stayed
+        wrong until the next poll, which is the sort of small staleness that
+        makes an ambient signal untrustworthy.
+        """
+        mood = mood_mod.mood_for(state)
+        changed = mood != self.office_mood
+        self.office_mood = mood
+        if changed:
+            logger.info("office mood: %s (face %s)", mood.reason, mood.face)
+        if self.status == STANDBY:
+            self._apply_office_mood()
+        return mood.reason
+
+    def _apply_office_mood(self) -> None:
+        """Put the stored mood on his face and ring. STANDBY only.
+
+        Guarded on `sleeping` because M5's sleepy is a whole state -- a bubble,
+        a settled head, idle motion stopped -- and an office poll landing in the
+        middle of it would wipe the bubble's face out from under it.
+        """
+        mood = self.office_mood
+        if mood is None or self.sleeping:
+            return
+        self.chan.face.face = mood.face
+        self.chan.face.leds = mood.leds
 
     def set_face(self, face: str) -> bool:
         """Wear one of the board's six faces directly.

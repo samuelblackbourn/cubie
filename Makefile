@@ -11,21 +11,18 @@ PYTHON ?= python3
 # now reports itself instead of passing quietly.
 VO_REPO ?= $(HOME)/virtual-office
 
-.PHONY: help check check-contract check-lint check-bridge check-pa \
-        check-idempotent check-gateway check-config gateway-tools bridge-install \
-        pa-install
+.PHONY: help check check-contract check-lint check-pa check-idempotent \
+        check-gateway check-config gateway-tools pa-install
 
 help:
 	@echo "check           the green bar (no CI by design, same as the sibling repos)"
 	@echo "check-contract  fail if /api/companion/status has drifted upstream"
-	@echo "check-bridge    typecheck + test the bridge"
 	@echo "check-idempotent  prove the firmware patch chain converges (clones, ~minutes)"
 	@echo "check-pa        typecheck-free unit tests for the PA service"
 	@echo "check-lint      fail on an undefined or unused name in any .py here"
 	@echo "check-gateway   fail if the gateway cannot route the tools pa/ calls"
 	@echo "check-config    prove the sdkconfig patcher keeps one option per choice"
 	@echo "gateway-tools   teach the installed gateway this fleet's display tools"
-	@echo "bridge-install  npm install in bridge/"
 	@echo "pa-install      create pa/.venv and install requirements"
 	@echo ""
 	@echo "check-contract needs the upstream shape. Either:"
@@ -35,23 +32,14 @@ help:
 	@echo "Exit 2 means 'could not check' -- NOT 'no drift'. A checkout behind its"
 	@echo "own remote is exit 2 too: comparing against stale bytes proves nothing."
 
-# Run this at the START of any session that touches the bridge, and before any
-# deploy. See scripts/check_companion_contract.py for why.
+# Run this at the START of any session that touches the office's payload, and
+# before any deploy. See scripts/check_companion_contract.py for why.
 check-contract:
 	VO_REPO=$(VO_REPO) $(PYTHON) scripts/check_companion_contract.py
 
-bridge-install:
-	cd bridge && npm install --no-audit --no-fund
-
-# Typecheck and unit tests. The interesting behaviour lives in
-# bridge/src/posture.ts, which is pure by design so it is testable without a
-# robot on the desk -- same split as the K10's totem_logic.h.
-check-bridge:
-	cd bridge && npx tsc --noEmit
-	cd bridge && npx vitest run
-
-# The contract guard runs FIRST: if the office's payload has drifted, the
-# bridge's types are wrong and its tests are asserting the wrong shape.
+# The contract guard runs FIRST: if the office's payload has drifted, pa/office.py
+# is parsing the wrong shape and pa/mood.py is deciding from fields that may no
+# longer be there -- so every test after it would be asserting against a fiction.
 # The PA service's own venv. Kept separate from the gateway's: the gateway is
 # a pinned PyPI release we deliberately do not touch, and installing our
 # dependencies into it would be exactly the kind of quiet coupling that makes
@@ -112,7 +100,7 @@ gateway-tools:
 check-config:
 	$(PYTHON) firmware/check-config-choices.py
 
-check: check-contract check-lint check-bridge check-pa check-config
+check: check-contract check-lint check-pa check-config
 
 # NOT part of `check`: it clones two repositories. Run it after touching
 # anything in firmware/*.sh. It catches a failure mode that is otherwise

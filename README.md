@@ -17,7 +17,7 @@ Build phases are S0–S5 there; this repo is S2 onward.
 | S1 — self-hosted server + reflash | **Done.** Gateway on office-server, Cubie on our own build |
 | S1a — M5's live avatar ported in | **Done.** Vendored MIT, blinking, six expressions |
 | S1c — OTA from the office | **Done.** `build` → `publish` → reset. No cable |
-| S2 — bridge, Rung 1 (posture mirrors the office) | **Written**, `bridge/`. Not yet deployed |
+| S2 — the office on his resting face | **Done.** `pa/mood.py`; the `bridge/` prototype it came from is gone |
 
 Four things were merged on reasoning rather than a result — firmware that cannot
 be compiled in the sandbox, a Kconfig symbol read off `master` because the
@@ -182,8 +182,7 @@ export STACKCHAN_TOKEN=$(sudo sed -nE 's/^STACKCHAN_TOKEN=//p' \
 
 That `sed` is the only supported way to get the token into a shell: it never
 prints the value. The gateway's token lives in `/etc/stackchan-gateway.env` as
-`STACKCHAN_TOKEN` and is the same value the bridge needs in
-`/etc/cubie-bridge.env`.
+`STACKCHAN_TOKEN`.
 
 ## His voice
 
@@ -577,7 +576,7 @@ Cubie (CoreS3, xiaozhi firmware)
 stackchan-mcp gateway (Python, upstream, run as-is)
    │  MCP
    ▼
-bridge (TypeScript, this repo)          ← S2
+character stack (Python, this repo)     ← pa/
    │  GET /api/companion/status, POST approve|deny|presence
    ▼
 Virtual-Office on office-server
@@ -593,10 +592,18 @@ argument. We build on `kisaragi-mochi/stackchan-mcp`'s xiaozhi fork, which alrea
 carries a StackChan board definition and adds `avatar.set_face`, `touch.get_touch_state`
 and per-LED control.
 
-**The bridge is an MCP client, not a protocol implementation.** Rather than reimplement
-WebSocket MCP, the upstream gateway runs as-is and the bridge is a client of it — a
-pattern the office already uses. The bridge stays small and testable: poll, diff, call
-tools.
+**We are an MCP client, not a protocol implementation.** Rather than reimplement
+WebSocket MCP, the upstream gateway runs as-is and we are a client of it — a pattern
+the office already uses. That decision outlived the code that first made it: the
+TypeScript `bridge/` was the prototype, and `pa/` is a client on the same terms.
+
+**The bridge itself is gone**, and its removal is the more interesting half. It polled
+the office and asserted a whole pose — `set_avatar` and `move_head` — which is exactly
+what the character stack owns, so the two could never have run together: one robot,
+two things driving the head. What was worth keeping was never the polling but the
+DECISION, one pure function from office state to a mood, and that is now `pa/mood.py`.
+The pose went with it, because breath, idle motion and gaze drift already make the head
+live and holding an attitude would have traded that for a statue.
 
 ## Configuration
 
@@ -623,7 +630,8 @@ file and the `awk` reports a length rather than a value, so no command here
 prints a secret into a terminal that later gets pasted somewhere.
 
 Do **not** symlink `/etc/cubie-character.env` to `/etc/cubie-bridge.env`. That
-file does not exist — the bridge is written but has never been deployed — and
+file does not exist and now never will — the bridge it belonged to has been
+removed — and
 systemd reports a dangling `EnvironmentFile` as result `'resources'`, which
 reads like a resource problem and is a missing file.
 
@@ -1007,6 +1015,8 @@ upstream never had.
 - **Mood is decided server-side.** Deriving it on-device would be a second definition
   of "busy", free to disagree with the wall.
 - **Servo pitch is clamped `5..85`** (firmware hard limit `0..88`). Never trust an
-  upstream value; the bridge clamps every motion command.
-- **An unreachable office must never look like a quiet one.** Confused posture and
-  amber LEDs, never the calm idle.
+  upstream value; `tracking.py` clamps every motion command.
+- **An unreachable office must never look like a quiet one.** A thinking face and
+  amber LEDs, never the calm idle. `pa/mood.py` holds that, and a test asserts no two
+  moods look alike — which caught `offline` and `review` colliding the moment the
+  bridge's poses stopped separating them.
