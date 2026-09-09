@@ -43,10 +43,31 @@ swear at a slow reply.
 Everything here uses tools the device already exposes and code already ported.
 This is most of the brief.
 
-**Nod, shake, laugh-bounce, recoil.** `pa/animation.py` is a keyframe engine
-with M5's four dances already in it. A nod is pitch keyframes; a shake is yaw; a
-laugh is a fast small bounce on both. No new tools, no firmware — the same
-mechanism the dances use.
+**Nod, shake, laugh, glance — done.** `pa/animation.GESTURES`, driven through
+`CharacterDriver.gesture(name)`. No new tools and no firmware, as predicted —
+the same keyframe machinery M5's dances use.
+
+Two things this turned out to cost that the plan did not foresee, both worth
+recording because they were invisible until the arithmetic was written down:
+
+- **Keyframes are absolute poses, and a gesture fires while idle motion has the
+  head wherever it last looked** (`idle.py` reaches yaw ±50, pitch 25–55). A
+  nod's dip is the absolute pose "pitch 33"; from a head already at 25 that is
+  a *rise*. The gesture did not start off-centre, it **inverted**. Every
+  sequence now opens with a 400 ms settle to rest, given enough speed to
+  actually arrive from the far corner, and a test walks every gesture from all
+  four corners of the idle envelope.
+- **`Chan.remove` runs no teardown.** Nothing had ever removed a *running*
+  dance, so it never mattered; one gesture replacing another does. Without a
+  teardown, blink stayed suspended and the eye weight stayed pinned — one nod
+  cut off by another and he never blinks again. `DanceModifier.abandon` gives
+  it back.
+
+And one defect it exposed rather than caused: `dance()` stood idle motion down
+and nothing ever put it back. It recovered only if something later set the
+status to STANDBY — which a conversation does in its `finally`, so a dance
+during a turn recovered and the bug stayed hidden. A one-second gesture makes
+that intolerable: the first nod would have been the last time he looked around.
 
 **Suspicious, evil, smug, unimpressed.** These need no new faces. The four
 feature axes are already exposed — `set_gaze`, and `set_feature` for position,
@@ -130,8 +151,9 @@ finding out. That is the first experiment, not the fallback.
 
 ## Order
 
-1. Port `posture.ts` in, delete `bridge/`. Settled, unblocks the ambient face.
-2. Tier 0 motion — nod, shake, laugh. Visible, testable without hardware.
+1. ~~Port `posture.ts` in, delete `bridge/`.~~ **Done** — `pa/mood.py`.
+2. ~~Tier 0 motion — nod, shake, laugh.~~ **Done** — `pa/animation.GESTURES`,
+   plus the `attention` glance the mood port deferred.
 3. Tier 0 composed expressions, with the face-first flush order asserted.
 4. The persona and the swearing gate in `pa/brain.py`.
 5. Tier 1 `angry` + `sleepy`, both sides in one commit, with a length check.

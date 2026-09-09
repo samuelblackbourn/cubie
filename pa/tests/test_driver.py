@@ -233,6 +233,111 @@ def test_a_dance_finishes_and_removes_itself():
     assert not any(isinstance(m, modifiers.DanceModifier) for m in d.chan.modifiers)
 
 
+def run_for(d, seconds: float, step: float = 0.05) -> float:
+    now = 0.0
+    while now < seconds:
+        d.update(now)
+        now += step
+    return now
+
+
+# ------------------------------------------------------------- gestures --
+
+
+def test_idle_motion_comes_back_when_a_sequence_ends():
+    """The defect the gestures exposed. `dance` stood idle motion down and
+    NOTHING ever put it back -- it returned only if something later happened to
+    set the status to STANDBY, which a conversation does in its `finally`, so a
+    dance during a turn recovered and this stayed hidden. A dance while idle
+    left him still for good, and a one-second nod would have made the first
+    nod the last time he ever looked around."""
+    d = fresh()
+    d.set_status(driver.STANDBY)
+    assert d.idle_motion is not None
+    d.gesture("nod")
+    assert d.idle_motion is None, "idle should stand down for the gesture"
+    run_for(d, 3.0)
+    assert d.performance is None
+    assert d.idle_motion is not None, "idle motion never came back"
+
+
+def test_a_sequence_that_ends_while_he_is_talking_does_not_start_idle_motion():
+    """Idle motion belongs to STANDBY. Restoring it because a gesture happened
+    to finish mid-sentence would put it back exactly where `set_status` had
+    just removed it."""
+    d = fresh()
+    d.set_status(driver.STANDBY)
+    d.gesture("nod")
+    d.set_status(driver.SPEAKING)
+    run_for(d, 3.0)
+    assert d.performance is None
+    assert d.idle_motion is None
+
+
+def test_a_status_change_mid_sequence_does_not_put_idle_underneath_it():
+    """Two things steering the head, which is what standing idle down avoids in
+    the first place."""
+    d = fresh()
+    d.gesture("glance")
+    d.set_status(driver.STANDBY)
+    assert d.idle_motion is None, "STANDBY restarted idle under a running gesture"
+    run_for(d, 3.0)
+    assert d.idle_motion is not None, "and it should be back once the gesture ends"
+
+
+def test_a_second_gesture_replaces_the_first_rather_than_fighting_it():
+    """Two timelines driving the same servos. The newer wins: a gesture reacts
+    to something that just happened, so the older one is out of date."""
+    d = fresh()
+    first = d.gesture("nod")
+    second = d.gesture("shake")
+    assert first is not second
+    assert first not in d.chan.modifiers
+    assert second in d.chan.modifiers
+    assert sum(isinstance(m, modifiers.DanceModifier) for m in d.chan.modifiers) == 1
+
+
+def test_every_gesture_can_actually_be_played_by_name():
+    """`gesture` goes through `animation.lookup`, so a name in the registry
+    that the lookup cannot find would raise here rather than on hardware."""
+    import animation
+
+    for name in animation.GESTURES:
+        d = fresh()
+        assert d.gesture(name) is not None
+
+
+def test_a_gesture_leaves_the_head_at_rest():
+    """The last keyframe's job, asserted through the driver rather than the
+    sequence, so the modifier's own teardown is in the picture too.
+
+    Idle motion level 0 on purpose. At level 2 this passes or fails depending
+    on when idle motion's next nudge lands, which would make it a test of the
+    clock -- the first draft asserted after three seconds and caught idle
+    having moved the head 6 degrees off rest, correctly."""
+    from tracking import REST_PITCH, REST_YAW
+
+    d = fresh(level=0)
+    d.set_status(driver.STANDBY)
+    d.gesture("shake")
+    run_for(d, 3.0)
+    assert d.performance is None, "the gesture should have finished by now"
+    assert d.chan.motion.target.yaw == REST_YAW
+    assert d.chan.motion.target.pitch == REST_PITCH
+
+
+def test_a_gesture_gives_blinking_back():
+    """A sequence drives eye weight, so blink is suspended for its duration.
+    Leaving it off would be a robot that never blinks again after one nod."""
+    d = fresh()
+    d.chan.face.blink_enabled = True
+    d.gesture("laugh")
+    run_for(d, 0.2)
+    assert d.chan.face.blink_enabled is False
+    run_for(d, 3.0)
+    assert d.chan.face.blink_enabled is True
+
+
 # ----------------------------------------------------------------- wake --
 def test_waking_adopts_the_real_pose_and_settles_from_it():
     """M5's Servo::init teleports its state to getCurrentAngle() rather than
@@ -289,3 +394,79 @@ def test_an_unreadable_pose_falls_back_to_rest_rather_than_inventing_one():
     d.update(0.0)
     moves = d.chan.effector.of("move_head")
     assert moves[-1]["yaw"] == 0.0 and moves[-1]["pitch"] == 45.0
+
+
+def test_replacing_a_gesture_gives_back_what_it_took():
+    """`Chan.remove` drops a modifier and runs no teardown -- which is why
+    `_stop_speaking` resets the mouth by hand. Removing a RUNNING sequence was
+    impossible until one gesture could replace another, and without
+    `abandon()` blink would stay suspended and the eye weight stay pinned where
+    the interrupted keyframe put it: one nod cut off by another and he never
+    blinks again."""
+    d = fresh()
+    d.chan.face.blink_enabled = True
+    d.gesture("laugh")
+    run_for(d, 0.6)          # far enough in for the laugh to be driving weight
+    assert d.chan.face.blink_enabled is False
+    assert d.chan.face.left_eye.weight is not None
+
+    d.gesture("nod")         # interrupts it
+    assert d.chan.face.blink_enabled is True, "blink stayed suspended"
+    assert d.chan.face.left_eye.weight is None, "eye weight stayed pinned"
+
+
+def test_an_interrupted_gesture_is_not_left_in_the_pool():
+    d = fresh()
+    d.gesture("laugh")
+    run_for(d, 0.3)
+    d.gesture("shake")
+    assert sum(isinstance(m, modifiers.DanceModifier) for m in d.chan.modifiers) == 1
+
+
+def test_a_gesture_survives_a_head_left_anywhere_idle_motion_could_leave_it():
+    """The animation tests check the arithmetic; this checks it end to end
+    through the driver, from a head deliberately parked at the far corner of
+    the idle envelope."""
+    from tracking import REST_PITCH, REST_YAW
+
+    d = fresh(level=0)
+    d.chan.motion.move_with_speed(50.0, 25.0, 60, 0.0)
+    run_for(d, 2.0)
+    d.gesture("nod")
+    run_for(d, 3.0)
+    assert d.performance is None
+    assert d.chan.motion.target.yaw == REST_YAW
+    assert d.chan.motion.target.pitch == REST_PITCH
+
+
+def test_a_misspelled_sequence_name_does_not_freeze_him():
+    """The first version stopped idle motion and THEN looked the name up, so a
+    typo left him still: idle gone, `performance` still None, so update's
+    recovery branch never fired and nothing brought it back. A frozen robot
+    from a misspelling, which is the exact defect `_perform` exists to
+    prevent."""
+    d = fresh()
+    d.set_status(driver.STANDBY)
+    assert d.idle_motion is not None
+    try:
+        d.gesture("noddd")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown name must raise")
+    assert d.idle_motion is not None, "idle motion was stood down for a gesture that never ran"
+    assert d.performance is None
+
+
+def test_a_sequence_ending_while_he_dozes_does_not_wake_the_head_up():
+    """M5's sleepy stops idle motion deliberately -- he is dozing, not idling.
+    A gesture finishing during it would put the looking-around back and undo
+    that, which reads as a robot that cannot settle."""
+    d = fresh()
+    d.set_status(driver.STANDBY)
+    d.gesture("nod")
+    d.set_emotion("sleepy")
+    assert d.sleeping is True
+    run_for(d, 3.0)
+    assert d.performance is None
+    assert d.idle_motion is None, "idle motion came back on top of a doze"

@@ -337,6 +337,56 @@ immediately — and `welcome.ogg` is referenced nowhere in the code. What the
 boot screen actually is, and what actually speaks, still wants a serial capture
 to identify rather than a guess.
 
+## Gestures — nod, shake, laugh, glance
+
+`pa/animation.GESTURES`, played by `CharacterDriver.gesture(name)`. The same
+keyframe machinery as M5's four dances and a separate registry, because
+`SEQUENCES` claims to be "what the port carried over" and a claim you keep
+appending to stops being checkable.
+
+A dance is a performance you ask for; a gesture is punctuation — under two
+seconds, in the middle of something else. `glance` is the one the office drives
+itself: entering the `attention` mood makes him look up and come back, because
+a person notices movement rather than an attitude.
+
+Three things this cost that were not obvious, all of which failed silently:
+
+**Keyframes are absolute poses, and a gesture fires while idle motion has the
+head wherever it last looked** — `idle.py` reaches yaw ±50 and pitch 25–55. A
+nod's dip is the absolute pose "pitch 33"; from a head already at 25 that is a
+*rise*, so the gesture did not start off-centre, it **inverted**. Every sequence
+now opens with a 400 ms settle to rest with enough speed to arrive from the far
+corner, and a test walks every gesture from all four corners of that envelope.
+
+**A frame must be given the speed to arrive.** 30 degrees in 200 ms needs
+150 dps; command less and the next keyframe interrupts the move part-way, so the
+gesture is shallower than it reads on the page and nothing reports it. Asserted
+per keyframe. M5's `PANIC` deliberately fails the same check — its 40-degree
+reversals in 100 ms want 400 dps against a 240 ceiling — and that is *why* it
+reads as frantic, so the check covers our gestures only and a test pins the
+exemption rather than leaving it as a comment.
+
+**`Chan.remove` runs no teardown.** Nothing had ever removed a *running* dance,
+so it never mattered; one gesture replacing another does. Without
+`DanceModifier.abandon`, blink stayed suspended and the eye weight stayed pinned
+where the interrupted keyframe left them — one nod cut off by another and he
+never blinks again.
+
+`glance` fires **once per waiting episode, at the first moment he is standing
+by** — not once per poll, and not only on the poll that carries the transition.
+The distinction is the case that matters: an approval arriving mid-answer. The
+first version compared each reading against the previous one, so by the time he
+returned to standby `office_mood.reason` was already `attention` and every later
+poll failed the transition test. Something arrived and he never noticed, which
+is the one thing the gesture exists to prevent.
+
+And one defect they exposed rather than caused: **`dance()` stood idle motion
+down and nothing ever put it back.** It recovered only if something later set
+the status to STANDBY, which a conversation does in its `finally` — so a dance
+during a turn recovered and the bug stayed hidden. A one-second gesture makes it
+intolerable: the first nod would have been the last time he looked around.
+`_perform` now remembers the sequence and `update` gives idle back when it ends.
+
 ## Idle behaviour
 
 Blinking is already in the firmware — `set_blink(enabled: true)`, every 3–6

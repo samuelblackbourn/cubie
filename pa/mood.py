@@ -16,10 +16,13 @@ of the point.
 
 `attention` is the one mood whose pose was doing real work -- looking up to
 "catch a person's eye from across a desk". A held pose is a poor way to do that
-anyway; a person notices a MOVEMENT. So the intent belongs in a one-shot
-gesture on entering the mood, not a posture, and that waits on the nod
-animation (see PERSONALITY.md). The face and the LEDs land now; the glance is
-the animation's first real use.
+anyway; a person notices a MOVEMENT. So that intent is a one-shot gesture on
+entering the mood rather than a posture: `animation.GLANCE`, fired from
+`CharacterDriver.set_office_mood`.
+
+On the TRANSITION into `attention`, and only while STANDBY. Firing whenever the
+mood is still `attention` would glance every fifteen seconds for as long as an
+approval went unanswered, which is nagging rather than noticing.
 
 --- What it owns, and when ---
 

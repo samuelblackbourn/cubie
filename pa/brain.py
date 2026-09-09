@@ -70,6 +70,17 @@ MAX_SPEECH_CHARS = 320
 
 #: The faces the board exposes. The model picks one; anything else is dropped
 #: rather than passed to a tool that would reject it.
+#:
+#: A SECOND copy of `chan.FACES`, and deliberately not an import: this module
+#: runs on the gateway's interpreter beside the model client, and `chan` drags
+#: in the whole character stack for what is a list of six strings in a JSON
+#: tool schema. The cost of the copy is that it can drift, so a test asserts
+#: the two agree -- the same trap that once had `--characters` silently
+#: omitting the `retro` voice, from the same cause: two hand-written lists.
+#:
+#: It matters more than it looks, because the next face to be added is `angry`
+#: (PERSONALITY.md, Tier 1). Add it in one place and the model can name a face
+#: the board rejects, or the board grows a face the model is never told about.
 FACES = ("idle", "happy", "thinking", "sad", "surprised", "embarrassed")
 
 

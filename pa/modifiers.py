@@ -572,10 +572,15 @@ class DanceModifier(Modifier):
 
     @classmethod
     def named(cls, name: str, loop: bool = False) -> "DanceModifier":
-        """One of M5's four, by name. Raises rather than silently doing nothing."""
-        if name not in animation.SEQUENCES:
-            raise KeyError(f"unknown dance {name!r}; have {sorted(animation.SEQUENCES)}")
-        return cls(animation.SEQUENCES[name], loop)
+        """A dance or a gesture, by name. Raises rather than doing nothing quietly.
+
+        Both kinds run through this one class because they need the same two
+        things: the keyframe machinery, and blink suspended while the sequence
+        drives eye weight. A 400 ms nod does not care about the suspension --
+        you would not notice a blink it skipped -- and the laugh needs it, so
+        one implementation serves both.
+        """
+        return cls(animation.lookup(name), loop)
 
     def update(self, chan: Chan, now: float) -> None:
         if not self._started:
@@ -590,6 +595,20 @@ class DanceModifier(Modifier):
 
         if self._timeline.finished:
             self._finish(chan)
+
+    def abandon(self, chan: Chan) -> None:
+        """Give back what the sequence took, without playing the rest of it.
+
+        `Chan.remove` drops a modifier from the pool and nothing else -- it
+        does not run any teardown, which is why `_stop_speaking` resets the
+        mouth weight by hand after removing the speaking modifier. Removing a
+        RUNNING dance was impossible until gestures made one sequence replace
+        another, and without this the eyes would keep the weight the last
+        keyframe pinned and blink would stay suspended for good: one nod
+        interrupted by another and he never blinks again.
+        """
+        self._timeline.stop()
+        self._finish(chan)
 
     def _finish(self, chan: Chan) -> None:
         if self._blink_was is not None:
