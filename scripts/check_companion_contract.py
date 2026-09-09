@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Fail if the companion endpoint's payload shape has drifted from what Cubie's
-bridge consumes.
+"""Fail if the companion endpoint's payload shape has drifted from what Cubie
+consumes.
 
 ## Why this exists
 
-The bridge maps `GET /api/companion/status` onto device MCP calls -- posture,
-LEDs, screen. A field renamed upstream does not raise anything: the bridge simply
-stops finding it, and Cubie quietly stops reflecting the office while looking
-perfectly healthy. That is the failure this guard exists to make loud.
+`pa/office.py` parses `GET /api/companion/status`, and `pa/mood.py` decides from
+its fields -- what is waiting, who is working, whether anyone is needed. A field
+renamed upstream does not raise anything: the parse simply stops finding it, the
+mood collapses to whatever the missing value defaults to, and Cubie quietly stops
+reflecting the office while looking perfectly healthy. That is the failure this
+guard exists to make loud.
+
+It was written for the `bridge/` prototype, which consumed the same endpoint and
+has since been removed; the character stack inherited both the payload and the
+exposure. If anything the guard matters more now, because the mood is AMBIENT --
+nobody asks for it, so nobody notices it going quiet.
 
 Ported from `totem-k10/scripts/check_companion_contract.py`, which guards the same
 endpoint for the K10. Same discipline, one addition -- see "Staleness" below.

@@ -1,6 +1,7 @@
 """Reading the office, and acting on it. The companion API, as the brain needs it.
 
-Mirrors `bridge/src/officeClient.ts` and `contract.ts`, and is downstream of
+Ported from the `bridge/` prototype's `officeClient.ts` and `contract.ts`
+(since removed -- see git history), and downstream of
 `contract/companion-status.json` in exactly the same way -- if
 `make check-contract` fails, the types here are the thing to fix, not a second
 source of truth.
@@ -139,7 +140,7 @@ def parse_office_state(body: Any) -> OfficeState | None:
     no reason. A field we DO read arriving with the wrong type is drift, and
     should surface as "cannot reach the office" rather than as a wrong answer.
 
-    Stricter than `bridge/src/contract.ts` in one place, deliberately: that
+    Stricter than the bridge's `contract.ts` was in one place, deliberately: that
     casts the two arrays without checking their elements, which is fine for
     driving a face. Here the ids go back to the office in an approve call and
     the text goes into a language model's prompt, so a malformed element is
