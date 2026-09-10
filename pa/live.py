@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 import brain as brain_mod  # noqa: E402
+import cli_brain as cli_brain_mod  # noqa: E402
 import conversation as conversation_mod  # noqa: E402
 import driver as driver_mod  # noqa: E402
 import hook as hook_mod  # noqa: E402
@@ -409,6 +410,64 @@ def _log_turn_failure(task: "asyncio.Task") -> None:
         logger.error("conversation turn failed: %r", exc)
 
 
+#: Which brain to run. `api` is the Messages API with an API key; `cli` is a
+#: headless `claude` on this machine, which needs no key because office-server
+#: is already logged in for its own agents. `auto` -- the default -- prefers
+#: the key when there is one, so upgrading this repo never silently changes
+#: which model an existing deployment is paying for.
+BRAIN_CHOICES = ("auto", "api", "cli")
+
+
+def choose_brain(office_client):
+    """Build the brain named by `CUBIE_BRAIN`, or None when there is none.
+
+    Returning None rather than raising is deliberate and matches what this
+    already did without a key: a Cubie who cannot think still breathes, blinks,
+    looks around and reacts to being stroked, and losing all of that because a
+    credential is missing would be a much worse failure than losing speech.
+
+    An unrecognised value is a typo, and a typo that silently selected a
+    fallback would be discovered as "why is it still billing the API". So it is
+    named and rejected, and the run continues with no brain rather than the
+    wrong one.
+    """
+    wanted = os.environ.get("CUBIE_BRAIN", "auto").strip().lower() or "auto"
+    if wanted not in BRAIN_CHOICES:
+        logger.error(
+            "CUBIE_BRAIN=%r is not one of %s -- running with no brain rather "
+            "than guessing which you meant",
+            wanted, ", ".join(BRAIN_CHOICES),
+        )
+        return None
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if wanted == "auto":
+        wanted = "api" if api_key else "cli"
+
+    if wanted == "api":
+        if not api_key:
+            logger.warning("CUBIE_BRAIN=api but ANTHROPIC_API_KEY is not set")
+            return None
+        return brain_mod.Brain(
+            api_key,
+            office_client,
+            model=os.environ.get("CUBIE_MODEL", brain_mod.DEFAULT_MODEL),
+        )
+
+    if not cli_brain_mod.available():
+        logger.warning(
+            "the CLI brain was asked for but `claude` is not on PATH. "
+            "office-server has it at ~/.npm-global/bin -- check the unit's PATH."
+        )
+        return None
+    # No CUBIE_MODEL default here on purpose: `Brain` has to name a model
+    # because the API requires one, and the CLI does not -- letting it pick its
+    # own default means one fewer place that pins a model by hand.
+    return cli_brain_mod.CliBrain(
+        office_client, model=os.environ.get("CUBIE_MODEL", "")
+    )
+
+
 async def _read_office(client) -> "office_mod.OfficeState | None":
     """The office's state, or None -- the reason goes to the log, not the model.
 
@@ -604,19 +663,14 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
             # the conversation, because its `say` closes over this.
             voice = VoiceOverrides()
 
-            # --- the brain, when there is a key for it ---------------------
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            # --- the brain, when there is one to be had --------------------
+            office_client = office_mod.OfficeClient(
+                base_url=os.environ.get("OFFICE_HUB", office_mod.DEFAULT_BASE_URL),
+                token=os.environ.get("AGENTHUB_COMPANION_TOKEN", ""),
+            )
             conversation = None
-            if api_key:
-                office_client = office_mod.OfficeClient(
-                    base_url=os.environ.get("OFFICE_HUB", office_mod.DEFAULT_BASE_URL),
-                    token=os.environ.get("AGENTHUB_COMPANION_TOKEN", ""),
-                )
-                thinker = brain_mod.Brain(
-                    api_key,
-                    office_client,
-                    model=os.environ.get("CUBIE_MODEL", brain_mod.DEFAULT_MODEL),
-                )
+            thinker = choose_brain(office_client)
+            if thinker is not None:
                 conversation = conversation_mod.Conversation(
                     character=character,
                     brain=thinker,
@@ -626,14 +680,18 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     listen_ms=int(os.environ.get(
                         "CUBIE_LISTEN_MS", conversation_mod.DEFAULT_LISTEN_MS)),
                 )
-                logger.info("brain ready (model %s)", thinker.model)
+                logger.info(
+                    "brain ready (%s, model %s)",
+                    type(thinker).__name__,
+                    thinker.model or "the CLI's default",
+                )
             else:
                 # Not fatal: everything else -- idle motion, breathing, the
                 # face, head-pet -- works without it, and saying so once beats
                 # a tap that silently does nothing.
                 logger.warning(
-                    "ANTHROPIC_API_KEY is not set, so tap-to-talk is off. "
-                    "Everything else still runs."
+                    "no brain: neither ANTHROPIC_API_KEY nor the claude CLI is "
+                    "available, so tap-to-talk is off. Everything else still runs."
                 )
 
             # --- the wake word's audio, when we can transcribe it ---------

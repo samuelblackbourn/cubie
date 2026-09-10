@@ -11,9 +11,20 @@
 # Reads /etc/cubie-character.env. Mode 0600, root-owned, like the gateway's.
 #
 #   STACKCHAN_TOKEN            required -- the gateway's tool surface
-#   ANTHROPIC_API_KEY          the brain. WITHOUT IT tap-to-talk is off and
+#   ANTHROPIC_API_KEY          the brain, under CUBIE_BRAIN=api. WITHOUT a
+#                              brain of either kind tap-to-talk is off and
 #                              everything else still runs; it says so once at
 #                              startup rather than failing.
+#   CUBIE_BRAIN                auto (default) | api | cli. `cli` runs a
+#                              headless `claude` on this machine and needs no
+#                              API key -- office-server already spawns one for
+#                              the office's own agents. `auto` prefers the key
+#                              when there is one, so an upgrade never silently
+#                              moves an existing deployment onto another bill.
+#                              NOTE for `cli`: `claude` must be on the unit's
+#                              PATH, which is NOT the login shell's. It lives
+#                              in ~/.npm-global/bin on office-server, so this
+#                              unit sets PATH below.
 #   AGENTHUB_COMPANION_TOKEN   the office's companion API, so he can read what
 #                              is waiting and approve or decline it
 #   OFFICE_HUB                 default http://office-server.local:8420
@@ -24,6 +35,13 @@
 # Create it by DERIVING the token from the gateway's own env file, so the value
 # is never printed to a terminal (this repo's rule: no command it ships may
 # echo a secret, and terminals get pasted into chat):
+#
+# ⚠️ The command below writes with `>`, so it REPLACES the file. Rotating the
+# gateway's token by re-running it therefore deletes ANTHROPIC_API_KEY and
+# AGENTHUB_COMPANION_TOKEN, and nothing complains: a missing key is documented
+# as non-fatal, so the only symptom is a robot that stops being able to think.
+# That has happened. To rotate just the token, edit the one line in place, or
+# append what is missing the way deploy/install-notify.sh does.
 #
 #   sudo sh -c 'umask 077; printf "STACKCHAN_TOKEN=%s\n" \
 #     "$(sed -nE "s/^STACKCHAN_TOKEN=//p" /etc/stackchan-gateway.env | tr -d "\042\047")" \
@@ -65,6 +83,13 @@ Type=simple
 User=sam
 WorkingDirectory=/home/sam/cubie/pa
 EnvironmentFile=/etc/cubie-character.env
+# Only needed for CUBIE_BRAIN=cli, and it is the whole reason that mode fails
+# on a machine where `claude` works perfectly from the login shell: systemd's
+# default PATH is /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# and npm's global bin is not in it. The symptom is a startup warning naming
+# PATH rather than a crash, because a brain that cannot start is not a reason
+# to stop breathing.
+Environment=PATH=/home/sam/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # The GATEWAY's interpreter, not pa/.venv: the `mcp` package lives there and
 # nowhere else. The character logic itself imports nothing from it -- the
 # robot is behind a protocol precisely so pa/.venv can run the tests.
@@ -79,6 +104,21 @@ ProtectSystem=full
 # read-only rather than yes: the interpreter and the code both live under
 # /home/sam, so the process has to be able to read there.
 ProtectHome=read-only
+
+# NOT VERIFIED FROM THE SANDBOX: whether `claude` can run under
+# ProtectHome=read-only. The CLI keeps state under ~/.claude, and this unit
+# makes /home read-only for the process. `--no-session-persistence` stops the
+# per-turn session write, but any other write it wants would fail -- and it
+# would fail as a brain that cannot answer, not as an obvious permission
+# error. Only matters for CUBIE_BRAIN=cli. Check before blaming the code:
+#
+#   sudo systemd-run --uid=sam --property=ProtectHome=read-only \
+#     --property=Environment=PATH=/home/sam/.npm-global/bin:/usr/bin:/bin \
+#     --wait --pipe claude -p 'Reply with exactly: ok'
+#
+# If it cannot, the narrow fix is ReadWritePaths=/home/sam/.claude rather than
+# dropping ProtectHome -- the process still has no business writing anywhere
+# else under /home.
 
 # NOT VERIFIED FROM THE SANDBOX: whether this User can read the gateway's
 # event log. The gateway writes it under its own StateDirectory
