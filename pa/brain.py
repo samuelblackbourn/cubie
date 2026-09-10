@@ -44,7 +44,14 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
-from office import Outcome, OfficeState
+from brain_tools import FACES, TOOLS, ActionRecord, run_tool
+from office import OfficeState
+
+#: `FACES` is re-exported rather than used here: it moved to `brain_tools`
+#: when a second brain arrived, and `brain.FACES` is what the test that
+#: holds it against `chan.FACES` already reaches for. Declaring it keeps
+#: that name working and tells pyflakes the import is deliberate.
+__all__ = ["FACES", "TOOLS", "ActionRecord", "Brain", "BrainError", "Reply", "run_tool"]
 
 logger = logging.getLogger(__name__)
 
@@ -67,96 +74,6 @@ DEFAULT_MAX_STEPS = 4
 #: Characters of speech. Piper is about 14 characters a second, so 320 is
 #: roughly 23 seconds -- already long for a desk robot's answer.
 MAX_SPEECH_CHARS = 320
-
-#: The faces the board exposes. The model picks one; anything else is dropped
-#: rather than passed to a tool that would reject it.
-#:
-#: A SECOND copy of `chan.FACES`, and deliberately not an import: this module
-#: runs on the gateway's interpreter beside the model client, and `chan` drags
-#: in the whole character stack for what is a list of six strings in a JSON
-#: tool schema. The cost of the copy is that it can drift, so a test asserts
-#: the two agree -- the same trap that once had `--characters` silently
-#: omitting the `retro` voice, from the same cause: two hand-written lists.
-#:
-#: It matters more than it looks, because the next face to be added is `angry`
-#: (PERSONALITY.md, Tier 1). Add it in one place and the model can name a face
-#: the board rejects, or the board grows a face the model is never told about.
-FACES = ("idle", "happy", "thinking", "sad", "surprised", "embarrassed")
-
-
-TOOLS: list[dict[str, Any]] = [
-    {
-        "name": "approve_request",
-        "description": (
-            "Approve one pending approval, letting that agent carry on. "
-            "IMPORTANT: this resumes the agent by starting a brand-new "
-            "process, so the grant covers its whole resumed turn, not just "
-            "the one action it paused on. It cannot be undone from here. "
-            "Only call this when the person has actually told you to approve "
-            "something."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "The approval's id, exactly as given in the office state.",
-                }
-            },
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "deny_request",
-        "description": (
-            "Decline one pending approval, optionally saying why. The reason "
-            "is passed to the agent. Only call this when the person has "
-            "actually told you to decline something."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "The approval's id, exactly as given in the office state.",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Short explanation for the agent. Optional.",
-                },
-            },
-            "required": ["id"],
-        },
-    },
-    {
-        "name": "set_presence",
-        "description": (
-            "Tell the office whether someone is at the desk. Use it when the "
-            "person says they are leaving or back. A boolean only -- the "
-            "office deliberately accepts nothing else."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"present": {"type": "boolean"}},
-            "required": ["present"],
-        },
-    },
-    {
-        "name": "set_face",
-        "description": (
-            "Change your expression while you answer. Use it when the "
-            "expression carries something the words do not -- looking "
-            "thinking while you work something out, sad when the news is bad. "
-            "Not needed for every reply."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"face": {"type": "string", "enum": list(FACES)}},
-            "required": ["face"],
-        },
-    },
-]
-
 
 PERSONA = """You are Cubie, a small desk robot in Sam's Virtual-Office. You have \
 a screen for a face, a head that turns, and a synthesised voice.
@@ -263,16 +180,6 @@ def trim_speech(text: str, limit: int = MAX_SPEECH_CHARS) -> str:
     return tail if tail.endswith((".", "!", "?")) else tail + "…"
 
 
-@dataclass(frozen=True)
-class ActionRecord:
-    """One tool the model called, and how it went. For the log and the tests."""
-
-    name: str
-    arguments: dict[str, Any]
-    outcome: str
-    detail: str = ""
-
-
 @dataclass
 class Reply:
     speech: str
@@ -281,19 +188,6 @@ class Reply:
     #: True when the model never produced words -- it ran out of steps, or
     #: only called tools. The caller still needs something to say.
     incomplete: bool = False
-
-
-#: Outcomes rendered for the model, so it can tell the person the truth about
-#: what happened rather than assuming success.
-_OUTCOME_TEXT = {
-    Outcome.OK: "done",
-    Outcome.STALE: (
-        "that one was already handled by someone else -- the office state you "
-        "were given is out of date. Say so; do not retry."
-    ),
-    Outcome.REJECTED: "the office refused the request as malformed. Do not retry it.",
-    Outcome.UNREACHABLE: "could not reach the office, so nothing happened.",
-}
 
 
 class Brain:
@@ -402,66 +296,16 @@ class Brain:
         )
 
     async def _run_tool(self, call: dict) -> tuple[ActionRecord, str]:
-        name = call.get("name", "")
-        arguments = call.get("input") or {}
-        if not isinstance(arguments, dict):
-            return ActionRecord(name, {}, "rejected", "arguments were not an object"), (
-                "that call was malformed"
-            )
+        """Unwrap one Messages-API `tool_use` block and hand it to the shared
+        dispatcher.
 
-        if name == "set_face":
-            wanted = arguments.get("face")
-            if wanted not in FACES:
-                return (
-                    ActionRecord(name, arguments, "rejected", f"unknown face {wanted!r}"),
-                    f"{wanted!r} is not one of your faces",
-                )
-            return ActionRecord(name, arguments, "ok"), "done"
-
-        if name == "approve_request":
-            ident = arguments.get("id")
-            if not isinstance(ident, str) or not ident.strip():
-                return (
-                    ActionRecord(name, arguments, "rejected", "no id"),
-                    "you did not give an id",
-                )
-            outcome, detail = await self._office.approve(ident.strip())
-            return (
-                ActionRecord(name, arguments, outcome.value, detail),
-                _OUTCOME_TEXT[outcome],
-            )
-
-        if name == "deny_request":
-            ident = arguments.get("id")
-            if not isinstance(ident, str) or not ident.strip():
-                return (
-                    ActionRecord(name, arguments, "rejected", "no id"),
-                    "you did not give an id",
-                )
-            reason = arguments.get("reason")
-            outcome, detail = await self._office.deny(
-                ident.strip(), reason if isinstance(reason, str) else None
-            )
-            return (
-                ActionRecord(name, arguments, outcome.value, detail),
-                _OUTCOME_TEXT[outcome],
-            )
-
-        if name == "set_presence":
-            present = arguments.get("present")
-            if not isinstance(present, bool):
-                return (
-                    ActionRecord(name, arguments, "rejected", "present was not a boolean"),
-                    "presence has to be true or false",
-                )
-            outcome, detail = await self._office.set_presence(present)
-            return (
-                ActionRecord(name, arguments, outcome.value, detail),
-                _OUTCOME_TEXT[outcome],
-            )
-
-        return ActionRecord(name, arguments, "rejected", "unknown tool"), (
-            f"{name} is not a tool you have"
+        The unwrapping belongs here because the block shape is the HTTP
+        API's; everything after it does not, because `CliBrain` reaches the
+        same four tools over MCP and has to get identical answers. See
+        `brain_tools.run_tool`.
+        """
+        return await run_tool(
+            call.get("name", ""), call.get("input") or {}, self._office
         )
 
 

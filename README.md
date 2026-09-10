@@ -674,6 +674,91 @@ DECISION, one pure function from office state to a mood, and that is now `pa/moo
 The pose went with it, because breath, idle motion and gaze drift already make the head
 live and holding an attitude would have traded that for a statue.
 
+## Two brains
+
+`Conversation` calls exactly one method on whatever it is given --
+`respond(transcript, state) -> Reply` -- so what runs the model is a choice
+rather than a rewrite. `CUBIE_BRAIN` makes it:
+
+| value | what runs | what it costs |
+| --- | --- | --- |
+| `api` | `brain.Brain`, the Messages API | `ANTHROPIC_API_KEY`, billed per token |
+| `cli` | `cli_brain.CliBrain`, a headless `claude` on this machine | no key; a process spawn per turn |
+| `auto` (default) | the key when there is one, else the CLI | — |
+
+The CLI brain exists because office-server was already doing this. The office
+spawns headless `claude` for its own agents (`agents/claudeCommand.ts` in
+Virtual-Office) authenticated by the CLI's own login, so the machine on Cubie's
+desk can run a model without a second billing relationship.
+
+`auto` prefers the key **deliberately**. Upgrading this repo must never quietly
+move a running deployment onto a different bill or a different model. The
+corollary is worth knowing: a key that is *present but wrong* still wins under
+`auto`, so if you mean the CLI, say so rather than leaving a stale key in
+place.
+
+### What it costs
+
+A spawn per turn. Measured on office-server: **~3.7 s** wall for a trivial
+prompt against roughly 2 s for a direct POST, and **~5.3 s** for a turn that
+also calls a tool. He gains a beat before answering.
+
+One of those seconds was free and is not paid any more: with an inherited stdin
+the CLI waits for piped input before starting, and announces *"no stdin data
+received in 3s"*. `CliBrain` passes `DEVNULL`, which is worth three seconds of
+every conversation.
+
+### The tool surface is closed, and that is the point
+
+His brain is prompted by whatever is said in the room, and he demonstrably
+wakes on the television. An agent with a shell on office-server, driven by
+ambient speech, next to the gateway token and the office credentials, is not a
+theoretical problem. So the invocation closes the surface three times over,
+and any one of them would do it:
+
+```
+--tools ""            every built-in tool removed: no Bash, no Read, no WebFetch
+--strict-mcp-config   every MCP server ignored except the one named here
+--setting-sources ""  no user, project or local settings, so no CLAUDE.md
+```
+
+`--allowedTools` then names exactly `mcp__cubie__approve_request`,
+`deny_request`, `set_presence` and `set_face`. It is the allowlist, not the
+wall. `tests/test_cli_brain.py` asserts each of the three flags separately, so
+a failure names which layer went — and the tool-lockdown guard was checked by
+removing `--tools ""` from the real invocation and watching it fail.
+
+The subprocess also runs in an empty temporary directory rather than the
+repository, and its MCP server is handed `OFFICE_HUB`, the companion token and
+the turn log — **not** `STACKCHAN_TOKEN`. That server can approve and deny; it
+cannot reach the gateway, move the head or speak.
+
+### Why the tools go through MCP at all
+
+A separate process cannot call the character stack's Python, so the four tools
+are served to it over stdio MCP by `pa/office_mcp.py` — the protocol written
+out rather than the `mcp` SDK imported, because this process is spawned on
+every single utterance and every import it does happens while a person waits.
+
+Both brains dispatch through one implementation, `brain_tools.run_tool`. What
+is subtle there is not the schema but the OUTCOMES: `STALE` means somebody else
+already handled it and a retry is a second grant, `REJECTED` means our bug and
+retrying fails identically, `UNREACHABLE` means the work is still waiting. A
+second hand-written copy of that mapping would drift, and the drift would be
+invisible — the model told "done" for something that never happened.
+
+`--output-format json` reports the final text and nothing about what was called
+along the way, so the MCP server appends each call to a turn log that
+`CliBrain` reads back. That is how `set_face` reaches a process that has a face
+to set, and how an approval that really happened still gets logged when the
+turn times out.
+
+### What must never reach the speaker
+
+`stdout.strip()` would have him read MCP warnings aloud — your own first run
+printed three. The answer is parsed strictly out of the JSON `result` and
+anything else raises, so machine output ends the turn rather than being spoken.
+
 ## Configuration
 
 Copy `config.example.env` to `config.env` and fill it in. `config.env` is gitignored —
