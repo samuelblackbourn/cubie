@@ -697,6 +697,18 @@ corollary is worth knowing: a key that is *present but wrong* still wins under
 `auto`, so if you mean the CLI, say so rather than leaving a stale key in
 place.
 
+**And a stale key reaches further than `CUBIE_BRAIN`.** The CLI resolves
+`ANTHROPIC_API_KEY` *before* its own stored login, and says so when it does:
+*"claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth
+source is set and takes precedence over your claude.ai login"*. Since the same
+env file configures both brains, a key left behind for `api` used to decide the
+credential for `cli` as well -- a ten-character leftover made every turn fail
+while the identical command worked from a shell that did not have it set. So
+`CliBrain` now spawns `claude` with an explicit environment that drops
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` (`cli_brain.BLOCKED_ENV`).
+Choosing the CLI brain means choosing the CLI's login, and that is enforced
+rather than assumed.
+
 ### What it costs
 
 A spawn per turn. Measured on office-server: **~3.7 s** wall for a trivial

@@ -519,3 +519,38 @@ def test_a_sequence_ending_while_he_dozes_does_not_wake_the_head_up():
     run_for(d, 3.0)
     assert d.performance is None
     assert d.idle_motion is None, "idle motion came back on top of a doze"
+
+
+def test_leaving_idle_releases_the_gaze():
+    """The drift must not outlive the modifier that made it.
+
+    Eye x/y are plain ints with no release value, and `Chan.flush` re-sends the
+    recorded gaze after every `set_avatar` while the board applies host
+    overrides last. So a drift left set here silently overwrites every face's
+    own gaze from then on -- which is why `thinking`'s look-up-and-away had
+    never rendered. Seen on hardware as `set_gaze: x=-11` repeating for
+    minutes with only y (breath) moving.
+    """
+    character = fresh()
+    character.set_status(driver.STANDBY)
+    character.chan.face.set_gaze(-11, 7)
+
+    character.set_status(driver.LISTENING)
+
+    assert character.chan.face.left_eye.x == 0
+    assert character.chan.face.left_eye.y == 0
+    assert character.chan.face.right_eye.x == 0
+    assert character.chan.face.right_eye.y == 0
+
+
+def test_the_released_gaze_is_actually_sent():
+    """A cleared override nobody transmits changes nothing on the board."""
+    character = fresh()
+    character.set_status(driver.STANDBY)
+    character.chan.face.set_gaze(-11, 7)
+    character.chan.effector.calls.clear()
+
+    character.set_status(driver.LISTENING)
+    character.chan.flush()
+
+    assert any("set_avatar" in str(call) for call in character.chan.effector.calls)

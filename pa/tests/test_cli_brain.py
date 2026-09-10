@@ -315,3 +315,67 @@ def test_every_call_is_recorded(tmp_path):
     recorded = json.loads(log_path.read_text().strip())
     assert recorded["name"] == "set_presence"
     assert recorded["outcome"] == "ok"
+
+
+# --- the credential the CLI brain must not inherit ----------------------
+#
+# Choosing the CLI brain has to mean choosing the CLI's own login. The CLI
+# resolves ANTHROPIC_API_KEY first and says so, so a key left in the env for
+# the other brain silently decides this one's credential too.
+
+
+def test_the_api_key_is_not_passed_to_the_cli():
+    env = cli_brain.child_env({"ANTHROPIC_API_KEY": "sk-whatever", "HOME": "/home/sam"})
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["HOME"] == "/home/sam"
+
+
+def test_the_auth_token_is_not_passed_either():
+    assert "ANTHROPIC_AUTH_TOKEN" not in cli_brain.child_env(
+        {"ANTHROPIC_AUTH_TOKEN": "t", "PATH": "/usr/bin"}
+    )
+
+
+def test_everything_else_survives():
+    """It is a subtraction, not an allowlist: the CLI needs HOME and PATH."""
+    source = {"HOME": "/home/sam", "PATH": "/usr/bin", "LANG": "C", "STACKCHAN_TOKEN": "x"}
+    assert cli_brain.child_env(source) == source
+
+
+def test_a_real_environ_is_not_mutated(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-live")
+    cli_brain.child_env()
+    import os as _os
+
+    assert _os.environ["ANTHROPIC_API_KEY"] == "sk-live"
+
+
+# --- a timeout must carry its own explanation ---------------------------
+
+
+class DeadProcess:
+    """A killed subprocess with something to say, and one with nothing."""
+
+    def __init__(self, out=b"", err=b""):
+        self._pair = (out, err)
+
+    async def communicate(self):
+        return self._pair
+
+
+def test_a_timeout_reports_what_the_process_said():
+    said = asyncio.run(cli_brain.CliBrain._drain(DeadProcess(err=b"Invalid API key\n")))
+    assert "Invalid API key" in said
+    assert said.startswith("stderr=")
+
+
+def test_a_silent_process_yields_nothing_rather_than_noise():
+    assert asyncio.run(cli_brain.CliBrain._drain(DeadProcess())) == ""
+
+
+def test_draining_never_replaces_the_timeout_with_its_own_error():
+    class Hostile:
+        async def communicate(self):
+            raise OSError("pipe already closed")
+
+    assert asyncio.run(cli_brain.CliBrain._drain(Hostile())) == ""
