@@ -288,8 +288,28 @@ class CharacterDriver:
             self.chan.remove(self.idle_motion)
             self.idle_motion = None
         if self.idle_expression is not None:
+            # Release the drift before dropping the modifier that owns it.
+            #
+            # Removing it only stops FUTURE drift; it does not undo the last
+            # one, and eye x/y are plain ints with no "release" value the way
+            # weight and size have None. So whatever offset the final drift
+            # chose stays set -- and because `Chan.flush` re-sends the recorded
+            # gaze after every `set_avatar`, and the board applies host
+            # overrides LAST, that stale offset outlives every face change.
+            #
+            # The visible cost is that each face's own `kFaceGazeX/Y` survives
+            # about one frame before being overwritten, so `thinking`'s
+            # deliberate look-up-and-away has never rendered. Confirmed on
+            # hardware from the serial console: `set_gaze: x=-11` repeating
+            # with only y moving, y being breath, x being a drift from minutes
+            # earlier.
+            #
+            # `reassert_face` is what actually delivers it -- a cleared
+            # override that is never sent changes nothing on the board.
+            self.idle_expression._reset(self.chan)
             self.chan.remove(self.idle_expression)
             self.idle_expression = None
+            self.chan.reassert_face()
 
     # ------------------------------------------------------------ emotion --
     def set_emotion(self, emotion: str) -> str:

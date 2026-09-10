@@ -86,6 +86,29 @@ DEFAULT_TIMEOUT_S = 25.0
 #: needing to know anything about this repo's layout.
 _MODULE_DIR = Path(__file__).resolve().parent
 
+#: Environment variables removed before spawning `claude`.
+#:
+#: The CLI resolves these BEFORE its own stored login, and says so when it
+#: does: "claude.ai connectors are disabled because ANTHROPIC_API_KEY or
+#: another auth source is set and takes precedence over your claude.ai login".
+#: We inherit `os.environ`, and `ANTHROPIC_API_KEY` is in the character stack's
+#: environment because the same file configures the API brain -- so a key left
+#: behind for `CUBIE_BRAIN=api` silently decides the credential for
+#: `CUBIE_BRAIN=cli` as well.
+#:
+#: That is not hypothetical: a stale 10-character key in
+#: /etc/cubie-character.env made every turn fail while the identical command
+#: succeeded from a shell that did not have it set. Choosing the CLI brain has
+#: to mean choosing the CLI's own login, so the variables that would override
+#: it are dropped rather than trusted to be absent.
+BLOCKED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+def child_env(environ: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment `claude` is spawned with. Pure, so a test can assert it."""
+    source = os.environ if environ is None else environ
+    return {k: v for k, v in source.items() if k not in BLOCKED_ENV}
+
 
 @dataclass(frozen=True)
 class _Turn:
@@ -253,6 +276,9 @@ class CliBrain:
                 # directory for context, and his brain has no business seeing a
                 # repository.
                 cwd=workdir,
+                # Explicit, so an API key meant for the other brain cannot
+                # quietly decide which credential this one uses. See BLOCKED_ENV.
+                env=child_env(),
             )
         except FileNotFoundError as exc:
             raise brain_mod.BrainError(
@@ -265,13 +291,20 @@ class CliBrain:
             )
         except asyncio.TimeoutError:
             process.kill()
-            await process.wait()
+            # Read what it managed to say before it was killed. The first
+            # version of this discarded both pipes, so the one message that
+            # would have explained the hang -- the CLI's own complaint on
+            # stderr -- was thrown away, and diagnosing a timeout took four
+            # rounds of guessing instead of reading one line. A diagnostic
+            # that drops the diagnosis is worth less than none.
+            said = await self._drain(process)
             actions, face = read_turn_log(log_path)
             # The actions still happened, so they are still reported -- an
             # approval that took effect must never be lost to a timeout.
             raise brain_mod.BrainError(
                 f"the CLI brain did not answer within {self.timeout_s:.0f}s "
                 f"({len(actions)} action(s) had already run)"
+                + (f"; it said: {said}" if said else "; it said nothing")
             )
 
         if stderr:
@@ -290,6 +323,25 @@ class CliBrain:
 
         text = self._text_from(stdout)
         return _Turn(text=text, actions=actions, face=face)
+
+    @staticmethod
+    async def _drain(process: Any, limit: int = 300) -> str:
+        """Whatever a killed process left on its pipes, trimmed for one log line.
+
+        Best-effort by construction: the process is already dead and this runs
+        on a failure path, so anything that goes wrong reading it must not
+        replace the timeout with a less useful exception.
+        """
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=2.0)
+        except (asyncio.TimeoutError, ValueError, OSError):
+            return ""
+        parts = []
+        for name, raw in (("stderr", stderr), ("stdout", stdout)):
+            text = " ".join((raw or b"").decode(errors="replace").split())
+            if text:
+                parts.append(f"{name}={text[:limit]!r}")
+        return "; ".join(parts)
 
     def _text_from(self, stdout: bytes) -> str:
         """Pull the answer out of `--output-format json`.
