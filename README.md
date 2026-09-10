@@ -879,11 +879,18 @@ with a living face is a coherent thing to want.
 
 ## The brain
 
-Tap his head and he listens, thinks with the office's state in front of him,
-answers out loud, and can act on what is waiting.
+Say the wake word and he listens, thinks with the office's state in front of
+him, answers out loud, and can act on what is waiting.
+
+**Touching him is not how you start a conversation.** A tap used to open a
+five-second microphone, and what that cost was not the extra path but what it
+displaced: with a brain configured, a tap never reached `on_touch`, so
+`HeadPetModifier` -- ported, tested, and the whole point of having capacitive
+pads -- had never once fired on the robot. Every touch is affection now, and
+the wake word is the only way in.
 
 ```
-tap  ->  listen (5 s)  ->  Claude, with the office state  ->  speak  +  act
+wake word  ->  listen  ->  Claude, with the office state  ->  speak  +  act
 ```
 
 Four tools: **approve** an approval, **decline** one with a reason, tell the
@@ -1088,10 +1095,12 @@ until the single-turn path has been used on hardware.
 
 ### Configuration
 
-`ANTHROPIC_API_KEY` in `/etc/cubie-character.env`. **Without it tap-to-talk is
-off and everything else still runs** — idle motion, breathing, the face,
-head-pet — and it says so once at startup rather than failing or, worse,
-leaving a tap that silently does nothing.
+A brain, per `CUBIE_BRAIN` — either `ANTHROPIC_API_KEY` in
+`/etc/cubie-character.env` for the API, or a logged-in `claude` on this machine
+for the CLI. **Without either, answering is off and everything else still
+runs** — idle motion, breathing, the face, head-pet — and it says so once at
+startup rather than failing or, worse, leaving a wake word that silently does
+nothing.
 
 ## The green bar
 

@@ -468,6 +468,35 @@ def choose_brain(office_client):
     )
 
 
+def route_event(event: dict, character) -> None:
+    """Send one gateway event to the character stack.
+
+    Lifted out of `run_once`'s closure so it can be tested at all: the routing
+    here was wrong for the whole life of the project and nothing could assert
+    it, because it lived inside a function that needs an MCP session, a hook
+    receiver and an office poll to construct.
+
+    EVERY touch is affection. Touching him is not how you start a conversation
+    -- the wake word is.
+
+    A tap used to call `conversation.turn()` instead, and the cost was not the
+    extra path but what it displaced: with a conversation configured a tap
+    NEVER reached `on_touch`, so `HeadPetModifier` -- ported, tested, and the
+    thing that makes him look pleased to be stroked -- had never once fired on
+    the robot. Petting him opened a five-second microphone.
+
+    `apply-m5-touch.sh` also makes a TAP the default outcome of any release
+    that did not swipe, so a stroke confined to one pad arrives here as a tap.
+    Under the old routing that was a recording; now it is a fuss, which is what
+    the person doing it meant.
+    """
+    if event.get("event_type") != "touch":
+        return
+    subtype = event.get("subtype") or ""
+    logger.info("touch event: %s", subtype)
+    character.on_touch(subtype)
+
+
 async def _read_office(client) -> "office_mod.OfficeState | None":
     """The office's state, or None -- the reason goes to the log, not the model.
 
@@ -787,23 +816,7 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                 loop.call_soon_threadsafe(spawn)
 
             def on_event(event: dict) -> None:
-                if event.get("event_type") != "touch":
-                    return
-                subtype = event.get("subtype") or ""
-                logger.info("touch event: %s", subtype)
-                # A TAP means "listen to me"; a STROKE is affection and belongs
-                # to the head-pet reaction. Routing both to both would start a
-                # conversation every time he was petted.
-                if subtype == "tap" and conversation is not None:
-                    task = asyncio.create_task(
-                        conversation.turn(time.monotonic() - start)
-                    )
-                    # Detached tasks swallow their exceptions until interpreter
-                    # exit, and a turn that dies silently looks exactly like a
-                    # tap that did nothing.
-                    task.add_done_callback(_log_turn_failure)
-                else:
-                    character.on_touch(subtype)
+                route_event(event, character)
 
             # Defined before the event handler can fire, since it closes over it.
             start = time.monotonic()
