@@ -1007,6 +1007,77 @@ because a room with a fan in it can hold the VAD high indefinitely — a capture
 that never ends is the bug this removes, not one to reintroduce from the other
 side. Manual-stop captures are left alone: a held button is deliberate.
 
+### When the wake word does not fire at all
+
+Different fault, and a much harder one to reason about, because everything in
+the chain looks right.
+
+Two things were wrong at once. The first: **the speech models were never on the
+device.** They are packaged into `generated_assets.bin` at `0x800000`, and OTA
+writes only `xiaozhi.bin` at `0x20000` — so no update could ever deliver them,
+and `audio_service.cc` picks the wake-word implementation by which models it
+finds:
+
+```cpp
+if (esp_srmodel_filter(models_list_, ESP_MN_PREFIX, NULL) != nullptr) {
+    wake_word_ = std::make_unique<CustomWakeWord>();
+} else if (esp_srmodel_filter(models_list_, ESP_WN_PREFIX, NULL) != nullptr) {
+    wake_word_ = std::make_unique<AfeWakeWord>();
+}
+```
+
+With no MultiNet model present it silently fell back to `AfeWakeWord` with
+`wn9_nihaoxiaozhi_tts` — 你好小智. Every bit of tuning anyone did to
+`WAKE_WORD`, `WAKE_WORD_THRESHOLD` and the MultiNet choice was tuning code that
+had **never executed on the device**. The boot log is the tell, and it is one
+line: `CustomWakeWord` and `mn6_en` mean the models are there; `AfeWakeWord` and
+`wn9_nihaoxiaozhi_tts` mean they are not, whatever the sdkconfig says. Fixing it
+needs a full USB flash of `merged-binary.bin`, which also **wipes NVS** — wifi,
+gateway URL and token all have to be re-entered through the config portal
+afterwards.
+
+The second is unresolved at the time of writing, and the reason this section
+exists is the shape of the search rather than its answer. Four readings of the
+firmware were plausible and all four were wrong: the accent (MultiNet6 is
+grapheme-based, so spelling is a fair suspect — but it fired for nobody), the
+24 kHz input (`ReadAudioData` asks for 16000 and resamples), the
+`IsAfeWakeWord()` gate on `EnableWakeWordDetection` (it guards
+`kDeviceStateListening` and `kDeviceStateSpeaking`; `kDeviceStateIdle` enables
+unconditionally), and a missing de-interleave (`CustomWakeWord::Feed` takes the
+even samples correctly). Each cost a round of build-observe-paste, and none of
+them could have been settled by more reading.
+
+They all reduce to one question — **is there speech in the buffer?** — and the
+firmware will answer it if asked. `ReadAudioData` ends with
+
+```cpp
+#if CONFIG_USE_AUDIO_DEBUGGER
+    audio_debugger_->Feed(data);
+#endif
+```
+
+on the same buffer `wake_word_->Feed(data)` receives a few lines later. So:
+
+```
+AUDIO_DEBUG_UDP=office-server.local:8098 bash ~/cubie/firmware/build.sh
+~/cubie/tools/audio-debug-listen.py --seconds 15
+```
+
+It reports RMS per channel and writes each channel as its own WAV. Channel 0 is
+the microphone slot the recogniser reads; channel 1 is the playback reference
+the echo canceller wants. Silence in both is a microphone that is not
+capturing. Signal in 1 and not 0 is a recogniser reading the wrong slot — which
+would also explain a device that triggers on its own greeting and never on a
+person. Good signal in 0 exonerates the audio entirely and puts the fault
+inside MultiNet's matching, where the phrase and the threshold finally become
+fair suspects.
+
+**Build it back off when you are done.** `sdkconfig_append` merges by key, so an
+option nobody re-states survives; `build.sh` removes these two explicitly, and
+`check-config-choices.py` asserts that it does. A tap left on streams a
+continuous copy of the room onto the LAN in clear, with nothing on the device to
+show for it.
+
 ### What M5's software does about conversation: nothing
 
 Worth recording, because it is not what it looks like. Their `app_ai_agent` is
