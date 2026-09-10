@@ -77,8 +77,12 @@ MULTINETS = {
     "CONFIG_SR_MN_EN_MULTINET7_QUANT",
 }
 
+#: The trailing "" is AUDIO_DEBUG_UDP, unset -- which is what a normal build
+#: passes. It is spelled out here rather than defaulted inside the patcher so
+#: that forgetting it is an IndexError at the first check rather than a
+#: microphone tap that quietly survives into a shipped image.
 ARGS = ["http://office-server.local:8420/api/companion/ota", "LANGUAGE_EN_US",
-        "hi cubie", "Cubie", "20"]
+        "hi cubie", "Cubie", "20", ""]
 
 
 def main() -> int:
@@ -144,12 +148,40 @@ def main() -> int:
     check("idempotent", appended(once) == appended(twice))
 
     # 4. A changed phrase REPLACES rather than accumulating.
-    out = appended(run(patcher, once, ARGS[:2] + ["hey cubie", "Cubie", "35"]))
+    out = appended(run(patcher, once, ARGS[:2] + ["hey cubie", "Cubie", "35", ""]))
     phrases = [e for e in out if e.startswith("CONFIG_CUSTOM_WAKE_WORD=")]
     check("one phrase, updated", phrases == ['CONFIG_CUSTOM_WAKE_WORD="hey cubie"'], phrases)
     check("the threshold followed it", "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=35" in out)
 
-    # 5. A config with no stackchan build is a loud failure, not a silent one.
+    # 5. The microphone tap goes on when asked -- and comes OFF again.
+    #
+    # The second half is the half that matters. sdkconfig_append is merged by
+    # key, so an option nobody re-states survives from the previous build: a
+    # tap switched on once to diagnose a wake word would otherwise persist into
+    # every image afterwards, streaming a continuous copy of the room onto the
+    # LAN with nothing on the device to show for it. "Built without it" has to
+    # MEAN off, not merely "not mentioned".
+    debug_on = appended(run(patcher, base, ARGS[:5] + ["office-server.local:8098"]))
+    check("the tap goes on", "CONFIG_USE_AUDIO_DEBUGGER=y" in debug_on, debug_on)
+    check("the tap has somewhere to send",
+          'CONFIG_AUDIO_DEBUG_UDP_SERVER="office-server.local:8098"' in debug_on,
+          [e for e in debug_on if "AUDIO_DEBUG" in e])
+
+    # Kconfig has AUDIO_DEBUG_UDP_SERVER `depends on USE_AUDIO_DEBUGGER`, so an
+    # address without the enable is silently dropped and the enable without an
+    # address streams nowhere. They are asserted as a pair because they only
+    # work as one.
+    check("neither half arrives alone",
+          ("CONFIG_USE_AUDIO_DEBUGGER=y" in debug_on)
+          == any(e.startswith("CONFIG_AUDIO_DEBUG_UDP_SERVER=") for e in debug_on))
+
+    debug_off = appended(run(patcher, {"builds": [{"name": "stackchan",
+                                                   "sdkconfig_append": list(debug_on)}]}, ARGS))
+    check("building again without it takes it back off",
+          not [e for e in debug_off if "AUDIO_DEBUG" in e],
+          [e for e in debug_off if "AUDIO_DEBUG" in e])
+
+    # 6. A config with no stackchan build is a loud failure, not a silent one.
     try:
         run(patcher, {"builds": [{"name": "other"}]}, ARGS)
     except SystemExit:

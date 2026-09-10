@@ -260,7 +260,8 @@ echo "  VENDORED.md records $M5_PIN, matching build.conf"
 # instead, in the board config release.py actually reads.
 say "sdkconfig_append"
 python3 - "$BOARD/config.json" "http://$OFFICE_HOST:$OFFICE_PORT/api/companion/ota" \
-    "$FIRMWARE_LANGUAGE" "$WAKE_WORD" "$WAKE_WORD_DISPLAY" "$WAKE_WORD_THRESHOLD" <<'PYEOF'
+    "$FIRMWARE_LANGUAGE" "$WAKE_WORD" "$WAKE_WORD_DISPLAY" "$WAKE_WORD_THRESHOLD" \
+    "$AUDIO_DEBUG_UDP" <<'PYEOF'
 import json, pathlib, sys
 
 path = pathlib.Path(sys.argv[1])
@@ -269,6 +270,7 @@ language = sys.argv[3]
 wake_word = sys.argv[4]
 wake_word_display = sys.argv[5]
 wake_word_threshold = sys.argv[6]
+audio_debug_udp = sys.argv[7]
 config = json.loads(path.read_text())
 
 wanted = [
@@ -330,6 +332,26 @@ wanted = [
     "CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=y",
 ]
 
+# --- the microphone tap, normally absent --------------------------------
+# Two entries rather than one, and they come as a pair: AUDIO_DEBUG_UDP_SERVER
+# `depends on USE_AUDIO_DEBUGGER` in Kconfig.projbuild, so the address alone
+# would be silently dropped and the enable alone would stream to nowhere.
+#
+# `unwanted` is the half that is easy to forget. sdkconfig_append is merged BY
+# KEY below, so anything not re-stated survives from the previous build -- a
+# debug tap switched on once would stay on in every image afterwards, putting a
+# continuous copy of the room onto the LAN with nothing on the device to show
+# for it. Removing it explicitly makes "build without AUDIO_DEBUG_UDP" mean
+# "off" rather than "unchanged".
+unwanted = []
+if audio_debug_udp:
+    wanted += [
+        "CONFIG_USE_AUDIO_DEBUGGER=y",
+        f'CONFIG_AUDIO_DEBUG_UDP_SERVER="{audio_debug_udp}"',
+    ]
+else:
+    unwanted = ["CONFIG_USE_AUDIO_DEBUGGER", "CONFIG_AUDIO_DEBUG_UDP_SERVER"]
+
 builds = config.get("builds") or []
 target = next((b for b in builds if b.get("name") == "stackchan"), None)
 if target is None:
@@ -372,6 +394,12 @@ for in_group in CHOICE_GROUPS:
              if in_group(e.split("=", 1)[0]) and e != chosen]
     for entry in stale:
         print(f"  - {entry}   (a choice allows only one)")
+        appended.remove(entry)
+        changed = True
+
+for key in unwanted:
+    for entry in [e for e in appended if e.split("=", 1)[0] == key]:
+        print(f"  - {entry}   (not this build)")
         appended.remove(entry)
         changed = True
 
