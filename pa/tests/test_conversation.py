@@ -500,3 +500,64 @@ def test_preview_once_reports_a_voice_failure_as_a_failure_not_as_busy():
     assert (ok, busy) == (False, False), "a broken voice is not a busy robot"
     assert "voice failed" in detail
     assert conversation.busy is False, "the lock was not given back after a failure"
+
+
+def test_say_once_speaks_the_line_it_was_given_and_holds_the_lock():
+    """The other half of the preview test, and the half `/say` depends on: a
+    caller's line must be the line that comes out, under the same lock.
+
+    Worth pinning separately even though `preview_once` now delegates here. If
+    `say_once` ever grew a fixed line -- or `/say` were wired to `preview_once`
+    by mistake -- every preview test would still pass while the office announced
+    "two approvals are waiting" whatever it was asked to say.
+    """
+    import asyncio
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    import live
+    import voice_settings
+
+    conversation, _, _ = build()
+    held = {}
+
+    async def fake_speak(text, character=None, settings=None):
+        held["busy_while_speaking"] = conversation.busy
+        held["text"] = text
+        return True
+
+    original = live.speak_line
+    live.speak_line = fake_speak
+    try:
+        ok, detail, busy = asyncio.run(
+            live.say_once(conversation, "the build is green", voice_settings.VoiceSettings())
+        )
+    finally:
+        live.speak_line = original
+
+    assert (ok, busy, detail) == (True, False, "spoke")
+    assert held["text"] == "the build is green"
+    assert held["text"] != live.PREVIEW_LINE, "it said the sample line instead"
+    assert held["busy_while_speaking"] is True, "it spoke without holding the lock"
+    assert conversation.busy is False, "the lock was not given back"
+
+
+def test_say_once_refuses_while_he_is_mid_conversation():
+    """One robot, one speaker, one room. The refusal is the whole reason the
+    office asks the character stack to speak rather than speaking itself."""
+    import asyncio
+    import sys
+    from pathlib import Path as _Path
+
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    import live
+    import voice_settings
+
+    conversation, _, _ = build()
+    conversation.busy = True
+    ok, detail, busy = asyncio.run(
+        live.say_once(conversation, "hello", voice_settings.VoiceSettings())
+    )
+    assert (ok, busy) == (False, True)
+    assert "mid-conversation" in detail

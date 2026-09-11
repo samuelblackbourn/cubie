@@ -558,6 +558,18 @@ PREVIEW_LINE = "Two approvals are waiting, and one agent is still working."
 #: model per utterance, so this is generous on purpose.
 PREVIEW_TIMEOUT_S = 30.0
 
+#: The same, for a line the caller chose -- which can be `hook.MAX_SAY_CHARS`
+#: long where the preview is one fixed sentence.
+#:
+#: It has to comfortably EXCEED the worst case for that cap, not merely allow
+#: it. Timing out early does not stop the utterance -- he keeps talking and the
+#: lock stays held -- it only makes a line the whole room heard get reported to
+#: the office as a failure, which is the most confusing answer available. 300
+#: characters is on the order of 20 seconds aloud, so 90 leaves roughly 3x for
+#: the model load on top. Both figures are estimates; measure on the robot
+#: before tightening either.
+SAY_TIMEOUT_S = 90.0
+
 #: How often to read the office for the ambient mood. The bridge polled at its
 #: own interval; this is the same job, and the office caps its own cost rather
 #: than relying on us to. Slow on purpose: an approval that shows up on his ring
@@ -566,11 +578,11 @@ PREVIEW_TIMEOUT_S = 30.0
 OFFICE_POLL_S = 15.0
 
 
-async def preview_once(conversation, settings) -> tuple[bool, str, bool]:
-    """Say the sample line, holding the same lock a conversation turn holds.
+async def say_once(conversation, line, settings, source="say") -> tuple[bool, str, bool]:
+    """Say one line, holding the same lock a conversation turn holds.
 
     Module level rather than a closure inside `run_once` so it can be tested:
-    while it lived in the closure, reverting it to a read-only `busy` CHECK --
+    while this lived in the closure, reverting it to a read-only `busy` CHECK --
     the bug it was written to fix -- broke no test at all.
 
     TAKE the flag, do not merely read it. The first version checked `busy` and
@@ -580,17 +592,32 @@ async def preview_once(conversation, settings) -> tuple[bool, str, bool]:
     the check was added to prevent, and reading without taking also let two
     previews overlap each other.
 
+    One implementation for both speaking routes, deliberately. The lock is the
+    whole reason either of them is in the character stack rather than in the
+    office, so two copies of it would be two places for that argument to be
+    half-applied -- which is the shape of the original bug.
+
     Returns (spoke, detail, was_busy). The third is what keeps "he is talking"
     (409) apart from "the voice broke" (500), which must not be conflated: one
     is a state and the other is him being mute.
     """
-    if conversation is None or not conversation.claim("preview"):
+    if conversation is None or not conversation.claim(source):
         return False, "he is mid-conversation", True
     try:
-        ok = await speak_line(PREVIEW_LINE, settings=settings)
+        ok = await speak_line(line, settings=settings)
     finally:
         conversation.release()
     return ok, "spoke" if ok else "the voice failed; see the log", False
+
+
+async def preview_once(conversation, settings) -> tuple[bool, str, bool]:
+    """Say the SAMPLE line -- what the voice panel auditions a setting with.
+
+    Fixed on purpose: a preview is for judging a voice, and judging it on
+    whatever happens to be typed in compares two things at once. Anything with
+    something of its own to say wants `say_once`.
+    """
+    return await say_once(conversation, PREVIEW_LINE, settings, source="preview")
 
 
 async def poll_office_mood(
@@ -773,8 +800,8 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     return
                 await conversation.turn_on_transcript(heard, time.monotonic() - start)
 
-            def on_preview(settings) -> tuple[bool, str]:
-                """Say a sample line. Called on the RECEIVER's thread.
+            def speak_on_loop(line, settings, source, timeout_s) -> tuple[bool, str, bool]:
+                """Say a line from the RECEIVER's thread, and wait for the answer.
 
                 The busy check happens inside the coroutine, on the loop
                 thread, rather than out here: reading `conversation.busy` from
@@ -788,17 +815,47 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                     # server thread answers the office with a closed connection
                     # rather than a reason.
                     future = asyncio.run_coroutine_threadsafe(
-                        preview_once(conversation, settings), loop)
-                    return future.result(timeout=PREVIEW_TIMEOUT_S)
+                        say_once(conversation, line, settings, source=source), loop)
+                    return future.result(timeout=timeout_s)
                 except TimeoutError:
                     # The utterance may still be in flight; we just stop
                     # waiting. Saying "timed out" is honest about what we know,
                     # and it is not a "busy" answer -- the lock is still held by
-                    # the preview itself and will be released when it finishes.
-                    return False, f"no answer within {PREVIEW_TIMEOUT_S:.0f}s", False
-                except Exception as exc:  # noqa: BLE001 - a preview is not worth a crash
-                    logger.warning("preview raised: %r", exc)
-                    return False, "the preview failed; see the log", False
+                    # the utterance itself and will be released when it finishes.
+                    return False, f"no answer within {timeout_s:.0f}s", False
+                except Exception as exc:  # noqa: BLE001 - one line is not worth a crash
+                    logger.warning("%s raised: %r", source, exc)
+                    return False, f"the {source} failed; see the log", False
+
+            def on_preview(settings) -> tuple[bool, str, bool]:
+                return speak_on_loop(PREVIEW_LINE, settings, "preview", PREVIEW_TIMEOUT_S)
+
+            def on_say(text, settings) -> tuple[bool, str, bool]:
+                return speak_on_loop(text, settings, "say", SAY_TIMEOUT_S)
+
+            def on_status() -> hook_mod.Status:
+                """Read what he is doing. Called on the RECEIVER's thread.
+
+                Plain attribute reads, deliberately: no `run_coroutine_threadsafe`
+                and no gateway call. A status request has to be answerable while
+                a turn is in flight, and one that needed the event loop would
+                hang on precisely the wedged loop it was being used to diagnose.
+
+                `conversation` is None when there is no brain, and then `busy`
+                and `turns` go out as null rather than as `false` and `0` --
+                there is no lock to read, and saying "not busy" would be a
+                reading nobody took.
+                """
+                return hook_mod.Status(
+                    awake=not character.sleeping,
+                    status=character.status,
+                    face=chan.face.face,
+                    speech=chan.face.speech,
+                    busy=None if conversation is None else conversation.busy,
+                    turns=None if conversation is None else conversation.turns,
+                    calls_failed=effector.failed,
+                    calls_dropped=effector.dropped,
+                )
 
             def on_capture(capture: hook_mod.Capture) -> None:
                 """Called from the receiver's thread; must not block.
@@ -827,6 +884,19 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
                         hook_token,
                         on_capture,
                         on_preview=on_preview if conversation is not None else None,
+                        # Same gate as the preview, and for the same reason: no
+                        # brain means no `Conversation`, and there is no lock to
+                        # speak under. Better a 501 that says so than a line
+                        # spoken over a turn nothing was tracking.
+                        on_say=on_say if conversation is not None else None,
+                        # Unconditional, unlike the preview: reporting what he
+                        # is doing needs no brain and no voice. Note the whole
+                        # receiver is still gated on a transcriber below, so a
+                        # stack that cannot hear serves no status either and the
+                        # office gets a refused connection -- which is its own
+                        # honest answer, and a narrower one than this route can
+                        # fix. See README, "What is not built yet".
+                        on_status=on_status,
                         host=os.environ.get("CUBIE_HOOK_HOST", hook_mod.DEFAULT_HOST),
                         port=int(os.environ.get("CUBIE_HOOK_PORT", hook_mod.DEFAULT_PORT)),
                     )

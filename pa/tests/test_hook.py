@@ -28,6 +28,10 @@ import hook as hook_mod  # noqa: E402
 
 TOKEN = "t" * 64
 
+#: From the module rather than spelled again here: a test that hardcoded the
+#: path would still pass if the route were renamed out from under the office.
+STATUS = hook_mod.STATUS_PATH
+
 
 def wait_for(predicate, timeout: float = 5.0) -> bool:
     """Wait for something the SERVER THREAD does.
@@ -79,10 +83,13 @@ class Receiver:
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode()
 
-    def get(self):
+    def get(self, path="/", *, token=TOKEN):
         host, port = self.receiver.address
+        request = urllib.request.Request(f"http://{host}:{port}{path}")
+        if token is not None:
+            request.add_header("Authorization", f"Bearer {token}")
         try:
-            with urllib.request.urlopen(f"http://{host}:{port}/", timeout=5) as r:
+            with urllib.request.urlopen(request, timeout=5) as r:
                 return r.status, r.read().decode()
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode()
@@ -258,6 +265,17 @@ def test_a_get_is_answered_rather_than_hanging(served):
     status, text = r.get()
     assert status == 405
     assert "Ogg" in text
+
+
+def test_a_get_needs_the_token_too(served):
+    """`do_POST` checks the token before it looks at the path and `do_GET` does
+    the same, so no route on this port is readable without it. An unauthorised
+    GET is still an ANSWER rather than a hang, which is all the 405 above was
+    ever there to guarantee."""
+    r = served()
+    assert r.get(token=None)[0] == 401
+    assert r.get(STATUS, token=None)[0] == 401
+    assert r.get(STATUS, token="w" * 64)[0] == 401
 
 
 # --- the handoff ------------------------------------------------------------
@@ -610,5 +628,316 @@ def test_a_preview_that_raises_answers_500_rather_than_dropping_the_connection()
         assert "the preview failed" in json.loads(text)["detail"]
         # And it is still serving.
         assert r.post(b"ogg", path="/audio")[0] == 202
+    finally:
+        r.close()
+
+
+# --- the status route -------------------------------------------------------
+#
+# The read half. Everything above can make him speak; until these existed
+# nothing could ask what he was doing, because every GET was a 405.
+
+
+AWAKE_AND_IDLE = hook_mod.Status(
+    awake=True, status="standby", face="idle", speech="",
+    busy=False, turns=3, calls_failed=0, calls_dropped=0,
+)
+
+
+class Reporter(Receiver):
+    """A receiver with a status callback, passed through the CONSTRUCTOR.
+
+    Through the constructor for the reason `Previewer` records: assigning the
+    attribute afterwards leaves `HookReceiver`'s own parameter -- the one
+    `live.py` uses -- unexercised.
+    """
+
+    def __init__(self, answer=AWAKE_AND_IDLE, **kwargs):
+        self.reads = 0
+        self.answer = answer
+        super().__init__(on_status=self._on_status, **kwargs)
+
+    def _on_status(self):
+        self.reads += 1
+        return self.answer
+
+    def status(self, path=STATUS, **kwargs):
+        return self.get(path, **kwargs)
+
+
+def test_status_reports_what_he_is_doing(served):
+    r = Reporter()
+    try:
+        code, text = r.status()
+        assert code == 200
+        body = json.loads(text)
+        assert body["awake"] is True
+        assert body["status"] == "standby"
+        assert body["face"] == "idle"
+        assert body["busy"] is False
+        assert body["turns"] == 3
+        assert r.reads == 1
+    finally:
+        r.close()
+
+
+def test_status_is_json_not_prose():
+    """The office parses this. The preview had to learn the same lesson."""
+    r = Reporter()
+    try:
+        host, port = r.receiver.address
+        request = urllib.request.Request(f"http://{host}:{port}{STATUS}")
+        request.add_header("Authorization", f"Bearer {TOKEN}")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert response.headers.get_content_type() == "application/json"
+            json.loads(response.read().decode())
+    finally:
+        r.close()
+
+
+def test_what_cannot_be_observed_goes_out_as_null_not_as_a_default(served):
+    """The whole point of the route. Without a brain there is no Conversation
+    to ask, and answering `busy: false` would tell the office he is definitely
+    free when nothing here is tracking whether he is."""
+    r = Reporter(answer=hook_mod.Status(
+        awake=True, status=None, face="idle", speech="",
+        busy=None, turns=None,
+    ))
+    try:
+        body = json.loads(r.status()[1])
+        assert body["busy"] is None
+        assert body["turns"] is None
+        assert body["status"] is None, "no set_status yet is not the same as standby"
+        assert body["device"]["calls_failed"] is None
+        assert body["device"]["calls_dropped"] is None
+        # Present and null, not absent: an absent key invites a guess.
+        assert "busy" in body and "turns" in body
+    finally:
+        r.close()
+
+
+def test_the_device_link_is_never_claimed(served):
+    """The gateway owns the connection to the robot; this process is one of its
+    clients and only learns about the device by being refused. A `true` here
+    would be inferred from our own process being alive, which is not a reading
+    of anything."""
+    r = Reporter(answer=hook_mod.Status(
+        awake=True, status="standby", face="idle", speech="",
+        busy=False, turns=0, calls_failed=0, calls_dropped=0,
+    ))
+    try:
+        body = json.loads(r.status()[1])
+        assert body["device"]["connected"] is None, (
+            "zero failed calls is not evidence the robot is plugged in"
+        )
+        # The counters beside it are what is actually known.
+        assert body["device"]["calls_failed"] == 0
+    finally:
+        r.close()
+
+
+def test_failing_calls_are_reported_so_a_dead_link_is_visible(served):
+    r = Reporter(answer=hook_mod.Status(
+        awake=True, status="standby", face="idle", speech="",
+        busy=False, turns=0, calls_failed=812, calls_dropped=4,
+    ))
+    try:
+        body = json.loads(r.status()[1])
+        assert body["device"]["calls_failed"] == 812
+        assert body["device"]["calls_dropped"] == 4
+        assert body["device"]["connected"] is None, "still not a claim"
+    finally:
+        r.close()
+
+
+def test_a_stack_with_nothing_to_report_says_so_rather_than_404(served):
+    """501, the same answer the preview gives when there is no voice. A 404
+    would read as "wrong URL" and send the caller hunting a typo."""
+    r = served()
+    code, text = r.get(STATUS)
+    assert code == 501
+    assert "not available" in json.loads(text)["detail"]
+
+
+def test_a_status_that_raises_answers_500_rather_than_dropping_the_connection():
+    """An unhandled exception on the server thread closes the socket with no
+    reply, which the office cannot tell from the robot being unplugged."""
+    class Exploding(Reporter):
+        def _on_status(self):
+            raise RuntimeError("the driver is gone")
+
+    r = Exploding()
+    try:
+        code, text = r.status()
+        assert code == 500
+        assert "status read failed" in json.loads(text)["detail"]
+        # And it is still serving.
+        assert r.post(b"ogg", path="/audio")[0] == 202
+    finally:
+        r.close()
+
+
+def test_the_query_string_does_not_stop_status_being_routed(served):
+    r = Reporter()
+    try:
+        assert r.status(path=STATUS + "?t=1")[0] == 200
+    finally:
+        r.close()
+
+
+def test_a_post_to_the_status_path_is_still_a_capture(served):
+    """`/status` is a GET, so it must not take a path away from the capture
+    fall-through -- the property that keeps a mistyped hook URL delivering
+    audio instead of silently dropping it."""
+    r = served()
+    assert r.post(b"ogg bytes", path=STATUS)[0] == 202
+    assert r.arrived.wait(timeout=5)
+    assert r.captures[0].body == b"ogg bytes"
+
+
+# --- the say route ----------------------------------------------------------
+#
+# `/preview` speaks PREVIEW_LINE and nothing else, so it is no use to anything
+# that has something of its own to say. This is that route.
+
+
+SAY = hook_mod.SAY_PATH
+
+
+class Sayer(Receiver):
+    """A receiver with a say callback, passed through the CONSTRUCTOR."""
+
+    def __init__(self, answer=(True, "spoke", False), **kwargs):
+        self.said = []
+        self.answer = answer
+        super().__init__(on_say=self._on_say, **kwargs)
+
+    def _on_say(self, text, settings):
+        self.said.append((text, settings))
+        return self.answer
+
+    def say(self, body=b'{"text": "the build is green"}', token=TOKEN):
+        return self.post(body, token=token, path=SAY)
+
+
+def test_a_say_speaks_the_callers_own_line(served):
+    r = Sayer()
+    try:
+        code, text = r.say()
+        assert code == 200
+        assert json.loads(text)["spoke"] is True
+        assert r.said[0][0] == "the build is green", "it must not say the sample line"
+    finally:
+        r.close()
+
+
+def test_a_say_while_he_is_talking_is_refused_with_a_reason(served):
+    """409, exactly as the preview does it: the request was fine and the state
+    was wrong."""
+    r = Sayer(answer=(False, "he is mid-conversation", True))
+    try:
+        code, text = r.say()
+        assert code == 409
+        assert "mid-conversation" in text
+        assert json.loads(text)["spoke"] is False
+    finally:
+        r.close()
+
+
+def test_a_voice_failure_on_say_is_not_reported_as_him_being_busy(served):
+    """A broken voice makes him MUTE, not busy. Collapsing 500 into 409 has the
+    office report an ordinary state for something nobody will go and look at."""
+    r = Sayer(answer=(False, "the voice failed; see the log", False))
+    try:
+        code, text = r.say()
+        assert code == 500
+        assert "voice failed" in json.loads(text)["detail"]
+    finally:
+        r.close()
+
+
+def test_a_say_with_no_voice_available_says_so_rather_than_failing_quietly(served):
+    r = served()
+    code, text = r.post(b'{"text": "hello"}', path=SAY)
+    assert code == 501
+    assert "not available" in json.loads(text)["detail"]
+
+
+def test_a_say_with_no_usable_text_is_refused_before_anything_is_heard(served):
+    r = Sayer()
+    try:
+        assert r.say(b'{"settings": {}}')[0] == 400
+        assert r.say(b'{"text": 7}')[0] == 400
+        assert r.say(b'{"text": "   "}')[0] == 400
+        assert r.say(b"not json")[0] == 400
+        assert r.say(b'"a string"')[0] == 400
+        assert not r.said, "nothing may reach the voice from a rejected body"
+    finally:
+        r.close()
+
+
+def test_a_line_over_the_cap_is_refused_rather_than_truncated(served):
+    """Nothing can stop an utterance once it starts, so the cap is the only
+    bound on how long the room is held. Truncating would have him break off
+    mid-sentence with the caller told nothing."""
+    r = Sayer()
+    try:
+        code, text = r.say(json.dumps({"text": "a" * (hook_mod.MAX_SAY_CHARS + 1)}).encode())
+        assert code == 400
+        assert str(hook_mod.MAX_SAY_CHARS) in json.loads(text)["detail"]
+        assert not r.said, "a refused line must not be spoken at all"
+        # And the cap itself is allowed.
+        assert r.say(json.dumps({"text": "a" * hook_mod.MAX_SAY_CHARS}).encode())[0] == 200
+    finally:
+        r.close()
+
+
+def test_a_say_carries_voice_settings_like_a_preview_does(served):
+    r = Sayer()
+    try:
+        code, text = r.say(b'{"text": "hello", "settings": {"robot": 9}}')
+        assert code == 200
+        assert any("clamped" in note for note in json.loads(text)["adjusted"])
+        assert r.said[0][1].robot == 1.0
+    finally:
+        r.close()
+
+
+def test_a_say_still_needs_the_token(served):
+    r = Sayer()
+    try:
+        assert r.say(token="w" * 64)[0] == 401
+        assert not r.said
+    finally:
+        r.close()
+
+
+def test_a_say_that_raises_answers_500_rather_than_dropping_the_connection():
+    class Exploding(Sayer):
+        def _on_say(self, text, settings):
+            raise RuntimeError("the loop is closed")
+
+    r = Exploding()
+    try:
+        code, text = r.say()
+        assert code == 500
+        assert "speaking failed" in json.loads(text)["detail"]
+        # And it is still serving.
+        assert r.post(b"ogg", path="/audio")[0] == 202
+    finally:
+        r.close()
+
+
+def test_the_say_path_is_not_treated_as_a_capture(served):
+    r = served()
+    code, _ = r.post(b'{"text": "hello"}', path=SAY)
+    assert code == 501, "no on_say installed, so it must say so"
+    assert not r.captures, "a line to speak must never be mistaken for audio"
+
+
+def test_the_query_string_does_not_stop_a_say_being_routed(served):
+    r = Sayer()
+    try:
+        assert r.post(b'{"text": "hi"}', path=SAY + "?v=1")[0] == 200
     finally:
         r.close()

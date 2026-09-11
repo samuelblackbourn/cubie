@@ -1155,7 +1155,92 @@ and `ToggleChatState` alike, so touching the screen now produces a turn as
 well — one that ends when you touch it again, because that path is
 manual-stop by design.
 
+### Giving him something to say — `POST /say`
+
+`/preview` speaks `PREVIEW_LINE` and nothing else. That is right for a voice
+panel — you judge a setting on one fixed sentence, not on whatever was typed —
+and useless to anything with something of its own to say. So there is a second
+route, same port, same token:
+
+```json
+{ "text": "the build is green", "settings": { "pitch": 1.2 } }
+```
+
+`200` spoke, **`409` he is mid-conversation**, **`500` the voice failed**, `400`
+the line was unusable, `501` there is no voice on this stack. The `409`/`500`
+split is the one to keep: a failed voice makes him **mute**, not busy, and
+reporting that as "busy" is how a broken voice goes unlooked-at for a week.
+
+It holds the same lock a conversation turn holds — `Conversation.claim()`, one
+implementation shared with the preview. One robot, one speaker, one room.
+
+**The line is capped at `MAX_SAY_CHARS` and refused, not truncated.** Nothing
+here can stop an utterance once `speak_line` has started it: there is no
+interrupt in the character stack and no tool for one in the gateway's table. So
+the cap is the only bound on how long a caller can hold the room, and a line cut
+mid-sentence would have him break off with the caller told nothing.
+
+### Asking him what he is doing — `GET /status`
+
+Everything that reaches this port could make him **speak**; nothing could ask
+what he was **doing**. A GET was answered `405` whatever it asked for, so the
+office could tell him to talk and could not tell whether he was already
+talking — the worse half of a conversation to be missing.
+
+`GET /status` on the same port, with the same bearer token, answers:
+
+```json
+{
+  "awake": true,
+  "status": "standby",
+  "face": "idle",
+  "speech": "",
+  "busy": false,
+  "turns": 3,
+  "device": { "connected": null, "calls_failed": 0, "calls_dropped": 0 }
+}
+```
+
+`200` with that body, `401` without the token, `501` when this stack has nothing
+tracking it, `500` when the read itself failed — the same error vocabulary
+`/preview` uses, and for the same reasons.
+
+⚠️ **Not `GET /api/companion/status`.** That one points the other way: the
+*office* telling the robot what is waiting on a person, pinned by
+`contract/companion-status.json` and consumed by `pa/office.py`. This one is the
+robot reporting on himself. They share a word and nothing else.
+
+**`null` means "not observed" — never "no", never zero.** Without a brain there
+is no `Conversation` object at all, so `busy` and `turns` go out as null rather
+than as `false` and `0`; the office can then say "I cannot tell" instead of
+acting on a value nobody measured.
+
+**`device.connected` is always null, deliberately.** The gateway owns the link
+to the robot; this process is one of its clients and only ever learns about the
+device by being refused. A `true` there would be inferred from our own process
+being alive, which is a reading of nothing. `calls_failed` is the real evidence:
+climbing means the gateway is rejecting what we send, which is what a
+disconnected device looks like from in here.
+
+**It does not probe, and it does not take the event loop.** No gateway call, no
+head read — plain attribute reads on the server thread. A consistent snapshot
+would mean hopping into the loop and inheriting its timeout, which would make
+the one tool for diagnosing a stuck stack the one thing that hangs when it is
+stuck. The cost is a snapshot that can straddle a transition; under the GIL each
+read is atomic, so it is never a torn value.
+
+**The token is checked before the path, on GET as well as POST.** No route on
+this port is readable without it. An unknown path still gets its `405` — an
+answer rather than a hang — it simply comes after the token now.
+
 ### What is not built yet
+
+**Status when he cannot hear.** The whole receiver is still gated on a working
+transcriber and a brain, so a stack with neither serves no `/status` either and
+a caller gets a refused connection. That is honest — nothing is listening — but
+it is narrower than it needs to be, and it is exactly the case where you would
+most want to ask. Ungating the receiver changes the wake-word startup path, so
+it is left for a change that is about that.
 
 **A follow-up turn without the wake word.** He answers and stops; carrying on
 means saying "hi cubie" again. The device's VAD cannot be re-armed from the
