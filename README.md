@@ -1127,9 +1127,40 @@ an image too small to be a real partition, and it leaves NVS alone — so wifi,
 the gateway URL and the token all survive, which `merged-binary.bin` from `0x0`
 does not. Once is a fix; every iteration is a reason to stop iterating.
 
+### He answers to "hi cue bee", and why that is his name
+
+`cubie` is not an English word, and that was the whole fault. MultiNet6 takes
+graphemes but resolves them through a fixed English lexicon, so an invented
+name is a token it does not hold — unmatchable at any threshold, distance,
+volume or accent. It never once matched. The only "detection" ever seen on
+`hi cubie` came moments after his own speaker played the welcome sound, at
+`prob=0.386`, and was noise.
+
+`cue bee` is two ordinary words, pronounced identically. Same model, same
+threshold, one variable changed:
+
+```
+CustomWakeWord: Command: hi cue bee, Text: Cubie, Action: wake
+CustomWakeWord: Custom wake word detected: command_id=1,
+                string= HI HI CUE BEE, prob=0.400962
+Application: Wake word detected: Cubie (state: 3)
+```
+
+23.7 seconds after boot, from idle, from a person across the desk — the first
+detection this device has ever produced from speech. `WAKE_WORD_DISPLAY` is
+still `Cubie`, so the respelling is invisible everywhere but `build.conf`: he
+is called by his name and hears it spelled the way it sounds.
+
+**Why the carrier word stays.** A bare `cue bee` would drop "hi" — and the
+argument for keeping it got stronger with this spelling, not weaker. `cue` and
+`bee` are common English sounds in a way `cubie` never was, so "can you be
+there at five" becomes a candidate. The match above also accepted a doubled
+`HI`, so the decoder is tolerant: good for recall, bad for precision. Revisit
+it with a measured false-fire rate, not a guess.
+
 ### Two theories about why a made-up name is hard
 
-Both are about `MULTINET_MODEL`, and neither is settled.
+Kept because the reasoning is worth not re-deriving, and because the MultiNet7 branch is still the fallback if a future phrase needs a word no lexicon has. The cheaper theory — respell the name as words the lexicon already holds — is the one that turned out to be right, and it needed no model change at all.
 
 The build originally chose MultiNet6 on this reasoning: "MultiNet5 requires
 phonemes, MultiNet6 and MultiNet7 only accept graphemes" — so 6, since the
