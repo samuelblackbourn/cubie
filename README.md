@@ -1078,6 +1078,86 @@ option nobody re-states survives; `build.sh` removes these two explicitly, and
 continuous copy of the room onto the LAN in clear, with nothing on the device to
 show for it.
 
+### The wake word is in the assets, not the app
+
+This is the fact that made the whole search take as long as it did, so it gets
+its own heading.
+
+`CustomWakeWord::Initialize` has two branches:
+
+```cpp
+if (models_list == nullptr) {
+    threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
+    commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+} else {
+    models_ = models_list;
+    ParseWakenetModelConfig();      // reads index.json out of the ASSETS
+}
+```
+
+`AudioService` passes a non-null list, so the **second** branch runs. The
+phrase, the display text, the threshold, the language and the detection
+duration all come from `index.json` inside `generated_assets.bin`. The Kconfig
+values are read only in the branch that never executes.
+
+They still reach the device, because `scripts/build_default_assets.py` reads
+the sdkconfig and writes them into `index.json` at build time. But only if the
+ASSETS are rebuilt **and delivered** — and OTA writes `xiaozhi.bin` at
+`0x20000` and nothing else. Change `WAKE_WORD`, rebuild, publish, let him
+update, and he will listen for the old phrase with nothing anywhere to say so.
+
+The boot log is the check, and it is precise: `CustomWakeWord: Command: hi
+cubie, Text: Cubie, Action: wake` is printed **by `ParseWakenetModelConfig`**,
+so that line is the contents of the `index.json` currently on the flash. If it
+names the old phrase, the change did not land.
+
+`firmware/flash-assets.sh` writes that one partition over USB:
+
+```
+scp office-server:~/stackchan-mcp/firmware/build/generated_assets.bin \
+    office-server:~/stackchan-mcp/firmware/build/flash_args .
+bash ~/cubie/firmware/flash-assets.sh --port /dev/cu.usbmodem143101
+```
+
+It reads the offset out of `flash_args` from the build that produced the image
+rather than carrying a literal `0x800000`, because a hardcoded offset is
+correct until the partition table changes and then writes one partition over
+the middle of another, with no error and a dead device at the end. It refuses
+an image too small to be a real partition, and it leaves NVS alone — so wifi,
+the gateway URL and the token all survive, which `merged-binary.bin` from `0x0`
+does not. Once is a fix; every iteration is a reason to stop iterating.
+
+### Two theories about why a made-up name is hard
+
+Both are about `MULTINET_MODEL`, and neither is settled.
+
+The build originally chose MultiNet6 on this reasoning: "MultiNet5 requires
+phonemes, MultiNet6 and MultiNet7 only accept graphemes" — so 6, since the
+phrase is written as words, and 7 costs "a little accuracy drop" doing
+grapheme-to-phoneme at runtime.
+
+That argument is sound for a phrase made of English words. `cubie` is not one.
+If 6 resolves graphemes through a fixed English lexicon while 7 derives
+pronunciation at runtime, an invented name is exactly the case where 6 cannot
+match and 7 must — and the accuracy drop is the price of the phrase being his
+name at all. Hence `MULTINET_MODEL` is a variable rather than a line in
+`build.sh`: it is a thing to test.
+
+The cheaper theory needs no model change. **Spell the name as words the
+lexicon already has**: `hi cue bee` is pronounced exactly like "hi Cubie" and
+is made of two ordinary English words. It changes one variable instead of two,
+and he still answers to his name.
+
+What is NOT the explanation, each ruled out by evidence rather than argument:
+the accent (six pronunciations, nothing), the input sample rate
+(`ReadAudioData` asks for 16000 and resamples), the `IsAfeWakeWord()` gate
+(`kDeviceStateIdle` enables detection unconditionally, and he sits in idle),
+channel de-interleaving (`Feed` takes the even samples, correctly), the
+threshold (`0.2` from `index.json` and `0.2` as the class default), input level
+(no detection at 10 cm and raised voice), and the microphone itself —
+`tools/audio-debug-listen.py` measured real speech at `-33.8 dBFS` on channel
+0, the slot the recogniser reads, at the right rate.
+
 ### What M5's software does about conversation: nothing
 
 Worth recording, because it is not what it looks like. Their `app_ai_agent` is

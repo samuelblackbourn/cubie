@@ -261,7 +261,7 @@ echo "  VENDORED.md records $M5_PIN, matching build.conf"
 say "sdkconfig_append"
 python3 - "$BOARD/config.json" "http://$OFFICE_HOST:$OFFICE_PORT/api/companion/ota" \
     "$FIRMWARE_LANGUAGE" "$WAKE_WORD" "$WAKE_WORD_DISPLAY" "$WAKE_WORD_THRESHOLD" \
-    "$AUDIO_DEBUG_UDP" <<'PYEOF'
+    "$AUDIO_DEBUG_UDP" "$MULTINET_MODEL" <<'PYEOF'
 import json, pathlib, sys
 
 path = pathlib.Path(sys.argv[1])
@@ -271,6 +271,7 @@ wake_word = sys.argv[4]
 wake_word_display = sys.argv[5]
 wake_word_threshold = sys.argv[6]
 audio_debug_udp = sys.argv[7]
+multinet_model = sys.argv[8]
 config = json.loads(path.read_text())
 
 wanted = [
@@ -322,7 +323,7 @@ wanted = [
     # build can confirm -- watch for these lines in the echo below, and then
     # watch the boot log for "Custom wake word" from custom_wake_word.cc.
     "CONFIG_USE_CUSTOM_WAKE_WORD=y",
-    "CONFIG_SR_MN_EN_MULTINET6_QUANT=y",
+    f"{multinet_model}=y",
     f'CONFIG_CUSTOM_WAKE_WORD="{wake_word}"',
     f'CONFIG_CUSTOM_WAKE_WORD_DISPLAY="{wake_word_display}"',
     f"CONFIG_CUSTOM_WAKE_WORD_THRESHOLD={wake_word_threshold}",

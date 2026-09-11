@@ -82,7 +82,7 @@ MULTINETS = {
 #: that forgetting it is an IndexError at the first check rather than a
 #: microphone tap that quietly survives into a shipped image.
 ARGS = ["http://office-server.local:8420/api/companion/ota", "LANGUAGE_EN_US",
-        "hi cubie", "Cubie", "20", ""]
+        "hi cubie", "Cubie", "20", "", "CONFIG_SR_MN_EN_MULTINET6_QUANT"]
 
 
 def main() -> int:
@@ -148,7 +148,7 @@ def main() -> int:
     check("idempotent", appended(once) == appended(twice))
 
     # 4. A changed phrase REPLACES rather than accumulating.
-    out = appended(run(patcher, once, ARGS[:2] + ["hey cubie", "Cubie", "35", ""]))
+    out = appended(run(patcher, once, ARGS[:2] + ["hey cubie", "Cubie", "35", "", ARGS[6]]))
     phrases = [e for e in out if e.startswith("CONFIG_CUSTOM_WAKE_WORD=")]
     check("one phrase, updated", phrases == ['CONFIG_CUSTOM_WAKE_WORD="hey cubie"'], phrases)
     check("the threshold followed it", "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=35" in out)
@@ -161,7 +161,8 @@ def main() -> int:
     # every image afterwards, streaming a continuous copy of the room onto the
     # LAN with nothing on the device to show for it. "Built without it" has to
     # MEAN off, not merely "not mentioned".
-    debug_on = appended(run(patcher, base, ARGS[:5] + ["office-server.local:8098"]))
+    debug_on = appended(run(patcher, base,
+                            ARGS[:5] + ["office-server.local:8098", ARGS[6]]))
     check("the tap goes on", "CONFIG_USE_AUDIO_DEBUGGER=y" in debug_on, debug_on)
     check("the tap has somewhere to send",
           'CONFIG_AUDIO_DEBUG_UDP_SERVER="office-server.local:8098"' in debug_on,
@@ -181,7 +182,28 @@ def main() -> int:
           not [e for e in debug_off if "AUDIO_DEBUG" in e],
           [e for e in debug_off if "AUDIO_DEBUG" in e])
 
-    # 6. A config with no stackchan build is a loud failure, not a silent one.
+    # 6. Switching the MultiNet model leaves ONE member of the choice.
+    #
+    # This is the switch that tests whether an invented wake word needs
+    # MultiNet7's runtime grapheme-to-phoneme rather than MultiNet6. It is worth
+    # a check of its own because the failure mode is silent: two members of one
+    # Kconfig choice set at once is not an error, it is an ill-defined build,
+    # and the device would come back running whichever the generator read last
+    # -- which looks exactly like the model change having no effect.
+    mn7 = appended(run(patcher, once, ARGS[:6] + ["CONFIG_SR_MN_EN_MULTINET7_QUANT"]))
+    check("switching the MultiNet model leaves one selected",
+          keys_matching(mn7, MULTINETS) == ["CONFIG_SR_MN_EN_MULTINET7_QUANT=y"],
+          keys_matching(mn7, MULTINETS))
+
+    # ... and switching back is symmetric, so a diagnostic build does not become
+    # the permanent state of the tree by being harder to undo than to do.
+    back = appended(run(patcher, {"builds": [{"name": "stackchan",
+                                              "sdkconfig_append": list(mn7)}]}, ARGS))
+    check("and switching back leaves one selected",
+          keys_matching(back, MULTINETS) == ["CONFIG_SR_MN_EN_MULTINET6_QUANT=y"],
+          keys_matching(back, MULTINETS))
+
+    # 7. A config with no stackchan build is a loud failure, not a silent one.
     try:
         run(patcher, {"builds": [{"name": "other"}]}, ARGS)
     except SystemExit:
