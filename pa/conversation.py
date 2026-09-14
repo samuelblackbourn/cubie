@@ -45,6 +45,7 @@ a robot reciting.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -185,18 +186,34 @@ class Conversation:
         transcript = transcript.strip()
         logger.info("heard: %s", transcript)
 
-        # Thinking has a face, and it is the one movement that makes a pause
-        # read as work rather than as a fault.
+        # Thinking has a face AND a colour, and between them they are the one
+        # thing that makes a pause read as work rather than as a fault. The
+        # pause is the longest silent stretch of a turn -- the brain alone was
+        # measured at 4 seconds -- and with a dark ring it was indistinguishable
+        # from a robot that had not heard you.
         self._character.set_emotion("doubtful")
+        self._character.set_status(driver_mod.THINKING)
 
         # Read the office fresh rather than reusing the poll: the answer is
         # about what is waiting NOW, and a turn takes seconds.
+        #
+        # From here to the end of `_say` used to be one unlogged block. It is
+        # the most expensive part of a turn by a wide margin -- transcription
+        # is under a second, and this was measured at 15 to 18 -- and nothing
+        # said where the time went, so "he takes a long time to answer" could
+        # not be acted on without guessing which of four things to optimise.
+        # Hence monotonic, not wall-clock: this measures a duration, and
+        # wall-clock can step.
+        started = time.monotonic()
         state = await self._read_office()
+        office_done = time.monotonic()
 
         try:
             reply = await self._brain.respond(transcript, state)
         except Exception as exc:  # noqa: BLE001 - a failed turn must still speak
-            logger.warning("brain failed: %s", exc)
+            logger.warning(
+                "brain failed after %.1fs: %s", time.monotonic() - office_done, exc
+            )
             self._character.set_status(driver_mod.SPEAKING)
             await self._say(BRAIN_UNREACHABLE)
             return TurnResult(transcript=transcript, spoken=BRAIN_UNREACHABLE)
@@ -206,7 +223,28 @@ class Conversation:
 
         self._character.set_status(driver_mod.SPEAKING)
         spoken = reply.speech or NOTHING_HEARD
+
+        # Two lines rather than one total, because they answer different
+        # questions. The first is how long the person waits in SILENCE, which
+        # is the number that decides whether he feels responsive. The second
+        # includes him talking, which is not a delay to be optimised away --
+        # a longer answer taking longer is correct. Reporting only the total
+        # would make a good long answer look like a performance problem.
+        brain_done = time.monotonic()
+        logger.info(
+            "thinking took %.1fs (office %.1fs, brain %.1fs) -- saying %d chars",
+            brain_done - started,
+            office_done - started,
+            brain_done - office_done,
+            len(spoken),
+        )
+
         await self._say(spoken)
+        logger.info(
+            "turn took %.1fs (%.1fs of it speaking)",
+            time.monotonic() - started,
+            time.monotonic() - brain_done,
+        )
 
         for action in reply.actions:
             logger.info(
