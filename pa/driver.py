@@ -80,11 +80,20 @@ THINKING = "thinking"
 #: needed a signal: silence with a lit ring is a robot working, and silence
 #: with a dark one is a robot that did not hear you. Those looked the same.
 #:
-#: Pink for answering is deliberately the same value `mood.PA_PINK_DIM` uses
-#: for "board work waiting", and that collision is tolerable in exactly one
-#: direction: while he is answering he is also audibly talking, so nobody has
-#: to read the ring to know which it is. The ambient mood only reaches the ring
-#: between turns, when he is silent and the reading is unambiguous again.
+#: Pink for answering is his own colour at FULL strength, and the brightness
+#: is the whole point rather than a decoration.
+#:
+#: It was `mood.PA_PINK_DIM` first, on the argument that the ambient mood only
+#: reaches the ring between turns so the collision could not be read wrongly.
+#: That was wrong on the robot. `PA_PINK_DIM` is the `review` mood -- board
+#: work waiting -- and this office sits in `review` essentially permanently, so
+#: the ring returned to the identical colour the instant he stopped speaking.
+#: Nothing was stuck; answering and resting had become the same light, and a
+#: signal that is always on is not a signal.
+#:
+#: The residual overlap is with `mood.PA_PINK` (`attention`: something needs a
+#: person now). That one is genuinely safe in the way the first was claimed to
+#: be -- it is rarer, and while he is answering he is also audibly answering.
 #:
 #: Amber is not here on purpose. It means "cannot see the office", which is a
 #: FAULT rather than a conversational state, and it belongs to `mood.py` so it
@@ -92,7 +101,7 @@ THINKING = "thinking"
 STATUS_LEDS = {
     LISTENING: (0, 50, 0),
     THINKING: (0, 0, 50),
-    SPEAKING: mood_mod.PA_PINK_DIM,
+    SPEAKING: mood_mod.PA_PINK,
     STANDBY: (0, 0, 0),
 }
 
