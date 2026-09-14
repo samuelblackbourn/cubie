@@ -8,6 +8,7 @@ the status transitions, and that something always comes out of the speaker.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -561,3 +562,62 @@ def test_say_once_refuses_while_he_is_mid_conversation():
     )
     assert (ok, busy) == (False, True)
     assert "mid-conversation" in detail
+
+
+# --- where the time actually goes -------------------------------------------
+#
+# A working robot took 15 to 18 seconds to answer, and the log said nothing at
+# all between `heard:` and the turn ending. Transcription was measured at under
+# a second, so everything else was in one opaque block: the office read, the
+# brain, synthesising speech, and him talking. Four things with four different
+# fixes, and no way to tell which one to spend effort on.
+#
+# These assert the instrumentation exists, because a timing line that quietly
+# disappears leaves the next person exactly where we were.
+
+
+def test_a_turn_reports_where_its_time_went(caplog):
+    """The split has to name the stages, not just the total.
+
+    `office` and `brain` are separately actionable -- one is an HTTP call to a
+    machine on the same desk, the other spawns a `claude` process per
+    utterance -- so a number covering both is not a measurement anyone can act
+    on.
+    """
+    conversation, _, _ = build()
+    with caplog.at_level(logging.INFO, logger="conversation"):
+        asyncio.run(conversation.turn())
+
+    thinking = [r.getMessage() for r in caplog.records if "thinking took" in r.getMessage()]
+    assert thinking, [r.getMessage() for r in caplog.records]
+    assert "office" in thinking[0] and "brain" in thinking[0]
+
+
+def test_speaking_is_reported_apart_from_waiting(caplog):
+    """Time spent talking is not a delay to fix.
+
+    A longer answer takes longer to say, and that is correct. Reporting only a
+    total would make a good long answer look like a performance problem and
+    send someone optimising the wrong thing -- which is precisely the mistake
+    the whole turn's missing instrumentation invited.
+    """
+    conversation, _, _ = build()
+    with caplog.at_level(logging.INFO, logger="conversation"):
+        asyncio.run(conversation.turn())
+
+    turn = [r.getMessage() for r in caplog.records if "turn took" in r.getMessage()]
+    assert turn, [r.getMessage() for r in caplog.records]
+    assert "speaking" in turn[0]
+
+
+def test_a_failing_brain_still_says_how_long_it_took_to_fail(caplog):
+    """A brain that fails SLOWLY and one that fails instantly are different
+    faults -- a timeout against a crash -- and the message is otherwise
+    identical."""
+    conversation, _, _ = build(raises=RuntimeError("nope"))
+    with caplog.at_level(logging.WARNING, logger="conversation"):
+        asyncio.run(conversation.turn())
+
+    failed = [r.getMessage() for r in caplog.records if "brain failed" in r.getMessage()]
+    assert failed, [r.getMessage() for r in caplog.records]
+    assert "after" in failed[0] and "s:" in failed[0]
