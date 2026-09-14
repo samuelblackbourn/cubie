@@ -1151,12 +1151,22 @@ detection this device has ever produced from speech. `WAKE_WORD_DISPLAY` is
 still `Cubie`, so the respelling is invisible everywhere but `build.conf`: he
 is called by his name and hears it spelled the way it sounds.
 
-**Why the carrier word stays.** A bare `cue bee` would drop "hi" — and the
-argument for keeping it got stronger with this spelling, not weaker. `cue` and
-`bee` are common English sounds in a way `cubie` never was, so "can you be
-there at five" becomes a candidate. The match above also accepted a doubled
-`HI`, so the decoder is tolerant: good for recall, bad for precision. Revisit
-it with a measured false-fire rate, not a guess.
+**The carrier word was then dropped.** `WAKE_WORD` is now just `cue bee` —
+decided against the argument for keeping "hi", not in ignorance of it. That
+argument: a two-syllable name false-fires more than one with a carrier word,
+MultiNet is a command recogniser rather than a purpose-trained wake model, the
+match above accepted a doubled `HI` so the decoder is tolerant, and `cue` and
+`bee` are common English sounds in a way `cubie` never was — "can you be there
+at five" is now a candidate that did not previously exist.
+
+It went anyway, because talking to him should cost one word rather than a
+password, and because none of that is a measurement. The measurement is now
+available: he is on a desk in use, and a false fire is *visible* — he wakes,
+the LED goes green, and nobody spoke to him. Count them over a working day. If
+they are frequent: put "hi" back, or raise `WAKE_WORD_THRESHOLD` above the
+firmware's deliberately-sensitive default of 20, or lengthen the phrase — in
+that order, each one build and one assets flash. If they are rare, the carrier
+word was a precaution that turned out not to be needed.
 
 ### Two theories about why a made-up name is hard
 
