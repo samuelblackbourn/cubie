@@ -105,6 +105,40 @@ ProtectSystem=full
 # /home/sam, so the process has to be able to read there.
 ProtectHome=read-only
 
+# The one hole in ProtectHome, and it cost an evening to find.
+#
+# VERIFIED ON THE ROBOT, by the failure: every turn died here.
+#
+#   cubie.hook capture: 5087 bytes path=/audio session=822fd970-...
+#   stackchan_mcp.stt.faster_whisper Loading faster-whisper model=base
+#   Read-only file system: '/home/sam/.cache/huggingface'
+#   ERROR cubie.live conversation turn failed: OSError(30, 'Read-only file system')
+#
+# faster-whisper loads through huggingface_hub, which revalidates the model
+# against the Hub and writes back a tree cache and a commit hash even when the
+# weights are already local and unchanged. Two of those writes log themselves
+# as "Ignored error" and are survivable; a third is not, and it comes back as a
+# bare OSError(30) with no mention of whisper, models, or speech in it.
+#
+# That is what made this expensive. The audio arrived (status=202 from the
+# receiver), the gateway had done everything right, the device had recorded and
+# played its confirmation -- and the turn died on a filesystem permission four
+# layers down, reported as a number. It looked exactly like a microphone that
+# did not work, a wake word that did not fire, and a robot that ignored you.
+#
+# ReadWritePaths rather than dropping ProtectHome, which is what the note below
+# already said the narrow fix would be: the process still has no business
+# writing anywhere else under /home. It punches through both ProtectHome and
+# ProtectSystem for this path only.
+#
+# Not HF_HUB_OFFLINE=1, which would also stop the writes by stopping the Hub
+# calls. It is tempting -- those calls cost ~700 ms in the middle of a
+# conversation -- but it turns a missing or changed model into a hard failure
+# at speech time rather than a download, and STACKCHAN_FASTER_WHISPER_MODEL
+# exists precisely so the model can be changed. Worth doing later, on purpose,
+# with the cache pre-warmed; not worth smuggling into a correctness fix.
+ReadWritePaths=/home/sam/.cache/huggingface
+
 # NOT VERIFIED FROM THE SANDBOX: whether `claude` can run under
 # ProtectHome=read-only. The CLI keeps state under ~/.claude, and this unit
 # makes /home read-only for the process. `--no-session-persistence` stops the
