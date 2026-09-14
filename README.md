@@ -1276,6 +1276,45 @@ and `ToggleChatState` alike, so touching the screen now produces a turn as
 well — one that ends when you touch it again, because that path is
 manual-stop by design.
 
+### The sandbox that ate every conversation
+
+A capture would arrive, the receiver would answer 202, and he would say
+nothing. For a long time that looked like a microphone fault, then a wake-word
+fault, then a recogniser fault. It was none of them:
+
+```
+cubie.hook capture: 5087 bytes path=/audio session=822fd970-…
+stackchan_mcp.stt.faster_whisper Loading faster-whisper model=base
+Read-only file system: '/home/sam/.cache/huggingface'
+ERROR cubie.live conversation turn failed: OSError(30, 'Read-only file system')
+```
+
+`ProtectHome=read-only` in `deploy/cubie-character.service` is correct — the
+process reads its interpreter and its code from `/home/sam` and should not be
+able to write there. But faster-whisper loads through `huggingface_hub`, which
+revalidates the model against the Hub on **every** load and writes back a tree
+cache and a commit hash, even when the weights are local and unchanged. Two of
+those writes log themselves as "Ignored error" and survive. A third does not.
+
+What made it expensive is the shape of the error. `OSError(30)` mentions no
+model, no whisper, no speech — and it is raised four layers below anything this
+repo wrote, after every part we could see had already succeeded. The gateway
+had done its job, the device had recorded and played its confirmation, the
+receiver had accepted the bytes. It presented as a robot ignoring you.
+
+The fix is one line, `ReadWritePaths=/home/sam/.cache/huggingface`, and the
+unit already carried a comment predicting exactly this class of failure and
+naming that as the narrow fix. It was marked NOT VERIFIED, it was right, and
+being right in a comment did not stop it happening — so it is now
+`pa/tests/test_service_unit.py`, which fails if the directive is removed **or**
+if someone "fixes" a future instance by dropping `ProtectHome` instead.
+
+Not `HF_HUB_OFFLINE=1`, which would also stop the writes by stopping the Hub
+calls. Tempting — they cost ~700 ms in the middle of a conversation — but it
+turns a missing or changed model into a hard failure at speech time rather than
+a download, and `STACKCHAN_FASTER_WHISPER_MODEL` exists so the model can be
+changed. Worth doing deliberately later with the cache pre-warmed.
+
 ### Giving him something to say — `POST /say`
 
 `/preview` speaks `PREVIEW_LINE` and nothing else. That is right for a voice
