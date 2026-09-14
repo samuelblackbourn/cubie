@@ -93,6 +93,7 @@ def test_a_turn_listens_thinks_then_speaks_and_returns_to_standby():
 
     assert character.statuses == [
         driver_mod.LISTENING,
+        driver_mod.THINKING,
         driver_mod.SPEAKING,
         driver_mod.STANDBY,
     ]
@@ -240,7 +241,11 @@ def test_a_delivered_transcript_answers_without_listening():
     result = asyncio.run(conversation.turn_on_transcript("what's waiting?"))
 
     assert listened == [], "the wake-word path must not record again"
-    assert character.statuses == [driver_mod.SPEAKING, driver_mod.STANDBY]
+    assert character.statuses == [
+        driver_mod.THINKING,
+        driver_mod.SPEAKING,
+        driver_mod.STANDBY,
+    ]
     assert spoken == ["Two things are waiting."]
     assert result.transcript == "what's waiting?"
 

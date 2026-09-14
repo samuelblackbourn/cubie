@@ -186,9 +186,13 @@ class Conversation:
         transcript = transcript.strip()
         logger.info("heard: %s", transcript)
 
-        # Thinking has a face, and it is the one movement that makes a pause
-        # read as work rather than as a fault.
+        # Thinking has a face AND a colour, and between them they are the one
+        # thing that makes a pause read as work rather than as a fault. The
+        # pause is the longest silent stretch of a turn -- the brain alone was
+        # measured at 4 seconds -- and with a dark ring it was indistinguishable
+        # from a robot that had not heard you.
         self._character.set_emotion("doubtful")
+        self._character.set_status(driver_mod.THINKING)
 
         # Read the office fresh rather than reusing the poll: the answer is
         # about what is waiting NOW, and a turn takes seconds.

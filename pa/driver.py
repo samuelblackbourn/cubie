@@ -57,11 +57,42 @@ LISTENING = "listening"
 STANDBY = "standby"
 SPEAKING = "speaking"
 
-#: M5's LED colours per status: green while listening, blue while speaking,
-#: dark while idle. Their `setRgbColor(w, r, g, b)` puts 50 on one channel.
+#: Ours, not M5's. The pause between hearing and answering is the longest part
+#: of a turn -- measured at 4 seconds for the brain alone, and more than ten
+#: with speech -- and until now it looked identical to a robot that had not
+#: heard you. A status of its own gives it a colour.
+#:
+#: It deliberately does NOT reach M5's `SetStatus` branch table, which knows
+#: three words and puts anything else in the speech bubble. "thinking" on his
+#: face as text would be worse than no signal at all.
+THINKING = "thinking"
+
+#: The ring during a conversation. M5's own scheme was green while listening
+#: and blue while speaking, with `setRgbColor(w, r, g, b)` putting 50 on one
+#: channel; this keeps their green and their brightness and reassigns the rest.
+#:
+#: green    he is recording you
+#: blue     he is working out what to say
+#: pink     he is answering -- his own colour, from mood.PA_PINK_DIM
+#: dark     nothing is happening
+#:
+#: Blue moves from speaking to thinking because the pause is the part that
+#: needed a signal: silence with a lit ring is a robot working, and silence
+#: with a dark one is a robot that did not hear you. Those looked the same.
+#:
+#: Pink for answering is deliberately the same value `mood.PA_PINK_DIM` uses
+#: for "board work waiting", and that collision is tolerable in exactly one
+#: direction: while he is answering he is also audibly talking, so nobody has
+#: to read the ring to know which it is. The ambient mood only reaches the ring
+#: between turns, when he is silent and the reading is unambiguous again.
+#:
+#: Amber is not here on purpose. It means "cannot see the office", which is a
+#: FAULT rather than a conversational state, and it belongs to `mood.py` so it
+#: can show whether or not anyone is talking to him.
 STATUS_LEDS = {
     LISTENING: (0, 50, 0),
-    SPEAKING: (0, 0, 50),
+    THINKING: (0, 0, 50),
+    SPEAKING: mood_mod.PA_PINK_DIM,
     STANDBY: (0, 0, 0),
 }
 
@@ -209,7 +240,7 @@ class CharacterDriver:
         self.status = status
         is_idle = False
 
-        if status == LISTENING:
+        if status in (LISTENING, THINKING):
             self._stop_speaking()
         elif status == STANDBY:
             self._stop_speaking()

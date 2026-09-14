@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import driver  # noqa: E402
+import mood  # noqa: E402
 import modifiers  # noqa: E402
 from chan import Chan, RecordingEffector  # noqa: E402
 
@@ -99,14 +100,45 @@ def test_a_recognised_status_clears_a_bubble_a_previous_one_left():
     assert d.chan.face.speech == ""
 
 
-def test_the_status_leds_are_m5s():
+def test_the_ring_says_which_part_of_a_turn_he_is_in():
+    """M5's green is kept; the rest is reassigned.
+
+    Blue moves from speaking to THINKING because that is the pause that needed
+    a signal: four seconds of silence with a dark ring looked exactly like a
+    robot that had not heard you. Answering takes his own pink, which is safe
+    to share with the ambient "board work waiting" mood because while he is
+    answering he is also audibly talking.
+    """
     d = fresh()
     d.set_status(driver.LISTENING)
     assert d.chan.face.leds == (0, 50, 0)
-    d.set_status(driver.SPEAKING)
+    d.set_status(driver.THINKING)
     assert d.chan.face.leds == (0, 0, 50)
+    d.set_status(driver.SPEAKING)
+    assert d.chan.face.leds == mood.PA_PINK_DIM
     d.set_status(driver.STANDBY)
     assert d.chan.face.leds == (0, 0, 0)
+
+
+def test_thinking_never_reaches_the_speech_bubble():
+    """M5's SetStatus knows three words and shows anything else as text.
+
+    THINKING is ours, so it has to be handled explicitly -- otherwise the word
+    "thinking" appears on his face, which is worse than no signal.
+    """
+    d = fresh()
+    d.set_status(driver.THINKING)
+    assert d.chan.face.speech == ""
+
+
+def test_amber_is_not_a_conversation_colour():
+    """It means "cannot see the office" -- a fault, not a state of a turn.
+
+    If it were in STATUS_LEDS a conversation would clear it, and the one
+    signal that matters whether or not anyone is talking to him would vanish
+    the moment someone did.
+    """
+    assert mood.AMBER not in driver.STATUS_LEDS.values()
 
 
 def test_idle_motion_level_zero_still_gives_him_a_living_face():
