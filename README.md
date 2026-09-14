@@ -1302,12 +1302,38 @@ repo wrote, after every part we could see had already succeeded. The gateway
 had done its job, the device had recorded and played its confirmation, the
 receiver had accepted the bytes. It presented as a robot ignoring you.
 
-The fix is one line, `ReadWritePaths=/home/sam/.cache/huggingface`, and the
-unit already carried a comment predicting exactly this class of failure and
-naming that as the narrow fix. It was marked NOT VERIFIED, it was right, and
-being right in a comment did not stop it happening — so it is now
-`pa/tests/test_service_unit.py`, which fails if the directive is removed **or**
-if someone "fixes" a future instance by dropping `ProtectHome` instead.
+The first attempt at the fix was `ReadWritePaths=/home/sam/.cache/huggingface`,
+and it was **worse than the bug**:
+
+```
+Failed to set up mount namespacing: /home/sam/.cache/huggingface:
+    No such file or directory
+Main process exited, code=exited, status=226/NAMESPACE
+```
+
+`ReadWritePaths=` requires the path to already exist. Five restarts, then
+"Start request repeated too quickly", and a robot that had merely been mute was
+now off.
+
+That failure also corrected the diagnosis. The path did not exist because this
+user has **no Hugging Face cache at all** — the gateway keeps its own under its
+StateDirectory, which is exactly why the `listen` tool transcribes perfectly
+from that process while the same model fails here. The character stack was
+trying to *create* the cache under a read-only home, not write into an existing
+one.
+
+So: `CacheDirectory=cubie-character` with `Environment=HF_HOME=/var/cache/cubie-character`.
+systemd creates the directory, owned by the unit's User, before the process
+starts — nothing to pre-create, nothing to get wrong on a fresh machine, and
+`ProtectHome` stays read-only with no hole in it. The cost is one download
+(~145 MB for `base`) into a cache `systemctl clean` can remove.
+
+The unit already carried a comment predicting this class of failure and naming
+`ReadWritePaths` as the narrow fix. It was marked NOT VERIFIED, it was right
+about the cause and wrong about the remedy, and being right in a comment did
+not stop it happening — so it is now `pa/tests/test_service_unit.py`, which
+fails if either half goes missing, if someone "fixes" a future instance by
+dropping `ProtectHome`, or if a `ReadWritePaths` under `/home` comes back.
 
 Not `HF_HUB_OFFLINE=1`, which would also stop the writes by stopping the Hub
 calls. Tempting — they cost ~700 ms in the middle of a conversation — but it

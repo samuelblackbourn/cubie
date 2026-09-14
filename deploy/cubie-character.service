@@ -137,7 +137,35 @@ ProtectHome=read-only
 # at speech time rather than a download, and STACKCHAN_FASTER_WHISPER_MODEL
 # exists precisely so the model can be changed. Worth doing later, on purpose,
 # with the cache pre-warmed; not worth smuggling into a correctness fix.
-ReadWritePaths=/home/sam/.cache/huggingface
+# CacheDirectory rather than ReadWritePaths, and the difference is not style.
+#
+# ReadWritePaths= requires the path to ALREADY EXIST. Point it at a directory
+# that does not and systemd refuses to start the unit at all:
+#
+#   Failed to set up mount namespacing: /home/sam/.cache/huggingface:
+#       No such file or directory
+#   Main process exited, code=exited, status=226/NAMESPACE
+#
+# -- five times, then "Start request repeated too quickly", and a robot that
+# was merely mute is now off. That was this file's first attempt at this fix
+# and it was worse than the bug.
+#
+# And the path did not exist, which also corrects the diagnosis. This user had
+# no Hugging Face cache at all: the gateway keeps its own under its
+# StateDirectory, which is why the `listen` tool transcribes perfectly from
+# that process while the same model fails here. The character stack was trying
+# to CREATE the cache under a read-only home, not write into an existing one.
+#
+# CacheDirectory= has systemd create /var/cache/cubie-character, owned by this
+# unit's User, before the process starts. Nothing to pre-create, nothing to get
+# wrong on a fresh machine, and ProtectHome stays read-only with no hole in it
+# -- which is what the note below wanted in the first place.
+#
+# The cost: the model is downloaded once, into a cache that `systemctl clean`
+# can remove. ~145 MB for `base`. The first turn after a clean is slow and the
+# rest are not.
+CacheDirectory=cubie-character
+Environment=HF_HOME=/var/cache/cubie-character
 
 # NOT VERIFIED FROM THE SANDBOX: whether `claude` can run under
 # ProtectHome=read-only. The CLI keeps state under ~/.claude, and this unit

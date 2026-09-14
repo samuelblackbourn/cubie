@@ -40,11 +40,12 @@ import re
 HERE = pathlib.Path(__file__).resolve().parent
 UNIT = HERE.parent.parent / "deploy" / "cubie-character.service"
 
-#: Where huggingface_hub puts its cache for this unit's User, absent HF_HOME or
-#: XDG_CACHE_HOME -- and the unit sets neither. Written out rather than derived
-#: from the running user's home, because what matters is the path INSIDE the
-#: deployed unit, not on whatever machine the tests happen to run on.
-WHISPER_CACHE = "/home/sam/.cache/huggingface"
+#: The systemd-managed cache the unit points HF_HOME at. `CacheDirectory=` makes
+#: systemd create /var/cache/<name> owned by the unit's User before the process
+#: starts, so unlike a path under $HOME there is nothing to pre-create and
+#: nothing to get wrong on a fresh machine.
+CACHE_DIRECTORY = "cubie-character"
+HF_HOME = "/var/cache/cubie-character"
 
 
 def directives(name: str) -> list[str]:
@@ -82,15 +83,47 @@ def test_home_is_still_protected() -> None:
 def test_the_whisper_cache_is_writable() -> None:
     """The actual regression guard.
 
-    huggingface_hub writes to its cache on every model load. Under
-    ProtectHome=read-only that raises OSError(30) and every conversation turn
-    fails -- with no mention of speech anywhere in the error.
+    huggingface_hub writes to its cache on every model load, and creates it if
+    it is not there. Under ProtectHome=read-only with nowhere else to go, that
+    raises OSError(30) and every conversation turn fails -- with no mention of
+    speech anywhere in the error.
     """
-    paths = " ".join(directives("ReadWritePaths")).split()
-    assert WHISPER_CACHE in paths, (
-        f"{WHISPER_CACHE} is not in ReadWritePaths={paths!r} -- "
-        "faster-whisper will raise OSError(30) on every turn"
+    assert CACHE_DIRECTORY in directives("CacheDirectory"), (
+        f"CacheDirectory={CACHE_DIRECTORY} is missing -- faster-whisper has "
+        "nowhere writable and will raise OSError(30) on every turn"
     )
+
+
+def test_the_cache_is_where_huggingface_will_look() -> None:
+    """The two halves only work together.
+
+    CacheDirectory without HF_HOME creates a directory nothing uses, and the
+    model still lands under $HOME. HF_HOME without CacheDirectory names a path
+    that may not exist -- and that is not a quiet failure: ReadWritePaths= or a
+    missing directory makes systemd refuse to start the unit with
+    `status=226/NAMESPACE`, five times, and then give up. The robot goes from
+    mute to off.
+    """
+    environment = directives("Environment")
+    assert any(e == f"HF_HOME={HF_HOME}" for e in environment), (
+        f"HF_HOME={HF_HOME} is not set -- huggingface_hub will use $HOME and "
+        "the CacheDirectory will sit empty"
+    )
+
+
+def test_no_directive_points_into_a_home_that_may_not_exist() -> None:
+    """The first attempt at this fix, which was worse than the bug.
+
+    `ReadWritePaths=/home/sam/.cache/huggingface` requires the path to already
+    exist. It did not -- this user never had a Hugging Face cache, because the
+    gateway keeps its own under its StateDirectory. systemd refused to start
+    the unit at all.
+    """
+    for path in " ".join(directives("ReadWritePaths")).split():
+        assert not path.startswith("/home/"), (
+            f"ReadWritePaths={path} names a path under /home that systemd will "
+            "refuse to start the unit without (status=226/NAMESPACE)"
+        )
 
 
 def test_the_failure_is_recorded_where_someone_will_look() -> None:
@@ -104,3 +137,6 @@ def test_the_failure_is_recorded_where_someone_will_look() -> None:
     text = UNIT.read_text()
     assert "OSError(30" in text
     assert "faster-whisper" in text
+    # And the second failure, for the same reason: someone hitting a unit that
+    # will not start sees only this code.
+    assert "226/NAMESPACE" in text
