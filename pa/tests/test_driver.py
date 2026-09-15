@@ -115,7 +115,7 @@ def test_the_ring_says_which_part_of_a_turn_he_is_in():
     d.set_status(driver.THINKING)
     assert d.chan.face.leds == (0, 0, 50)
     d.set_status(driver.SPEAKING)
-    assert d.chan.face.leds == mood.PA_PINK_DIM
+    assert d.chan.face.leds == mood.PA_PINK
     d.set_status(driver.STANDBY)
     assert d.chan.face.leds == (0, 0, 0)
 
@@ -129,6 +129,15 @@ def test_thinking_never_reaches_the_speech_bubble():
     d = fresh()
     d.set_status(driver.THINKING)
     assert d.chan.face.speech == ""
+
+
+def test_answering_does_not_look_like_the_office_at_rest():
+    """The bug this replaced: SPEAKING was PA_PINK_DIM, which is the `review`
+    mood -- board work waiting -- and a real office sits in `review` almost
+    permanently. The ring returned to the identical colour the moment he
+    stopped talking, so answering and idle became the same light and the ring
+    never appeared to go out. A signal that is always on is not a signal."""
+    assert driver.STATUS_LEDS[driver.SPEAKING] != mood.PA_PINK_DIM
 
 
 def test_amber_is_not_a_conversation_colour():
