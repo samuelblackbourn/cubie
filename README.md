@@ -434,6 +434,44 @@ he doesn't — the only way that failure is visible without waiting at a desk.
 written, tested and never wired to a process. `pa/live.py` and
 `deploy/cubie-character.service` are that missing half.
 
+## Dancing to the music
+
+`pa/music.py`. The office reports what is playing on the companion payload it
+already serves (`nowPlaying`), and he moves to it. The whole feature is a
+decision function and two calls the driver already had.
+
+**He does not beat-match, and cannot.** Spotify's `audio-features` endpoint,
+which carried tempo, has been dead for new apps since 2024-11-27 with no
+replacement. There is no BPM to have, the office polls every 15 seconds, and he
+plays a keyframe sequence rather than tracking a kick drum.
+
+It reads as dancing anyway, and it is worth being clear about why rather than
+hoping. From two feet away, what makes a two-axis head look like it is dancing
+is that it **moves while music is on** and **changes when the song changes**.
+Nobody perceives phase in a servo neck. So a track change gets a dance (`happy`
+or `robot`) and a track that is still going gets a bob (`nod` or `glance`) about
+once a minute, which is what stops a three-minute song looking like a single
+coincidence.
+
+`panic` is never danced — it is 1.1 s of alarm and it means something.
+`look-around` is never danced either, for a subtler reason: it is 7.5 s of
+scanning the room, which is exactly what idle motion already does, so using it
+here would produce a robot whose dancing is indistinguishable from his standing
+still.
+
+**The refusals are the feature.** He does not dance when the music is not in
+the room (`inTheRoom` false — headphones, or a phone three miles away, which
+Spotify still calls playing), when he is asleep, when he is mid-conversation,
+or **when something needs a person**. That last one is not about servo wear: he
+exists so that his turning to face someone *means* something, and a robot
+flailing with an approval outstanding has spent that signal on a song. There is
+also a rolling cap of 60 moves an hour as a backstop — these are hobby servos in
+a small head, and the failure mode is not a crash, it is a gearbox getting loose
+over weeks.
+
+Nothing here talks to the robot: choosing the move is pure and testable, sending
+it is `live.py`'s job, the same split `idle.py` and `tracking.py` use.
+
 ## The rest of M5's character stack
 
 The whole of `stackchan/modifiers/`, `stackchan/animation/` and M5's own

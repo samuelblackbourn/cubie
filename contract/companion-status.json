@@ -9,8 +9,8 @@
   "source": {
     "repo": "samuelblackbourn/Virtual-Office",
     "file": "server/src/companion/companionStatus.ts",
-    "taken_from_commit": "362cb5bf922a877f3b77ab4e77d7ff4250d7b6ad",
-    "file_blob_sha": "923754b72e2b41b3a1146a7b5a6660ca6e87eb66",
+    "taken_from_commit": "9cd75b2939e4c8d9739120de9480793660c95507",
+    "file_blob_sha": "ce9feaa9b4f6d8942cc8def1941123e7bccc1d12",
     "_verify": "git rev-parse <commit>:<file> should equal file_blob_sha"
   },
   "fields": {
@@ -22,15 +22,24 @@
     "founderTasks": "array<{id:string,title:string,status:enum}>",
     "founderTasksTotal": "number",
     "mood": "enum",
-    "ts": "number"
+    "ts": "number",
+    "nowPlaying": "{trackId:string,title:string,artist:string,inTheRoom:boolean}?"
   },
-  "mood_values": ["calm", "busy", "attention"],
-  "founder_task_status_values": ["blocked", "review"],
+  "mood_values": [
+    "calm",
+    "busy",
+    "attention"
+  ],
+  "founder_task_status_values": [
+    "blocked",
+    "review"
+  ],
   "caps": {
     "COMPANION_MAX_PENDING": 5,
     "COMPANION_MAX_ONE_LINE": 120,
     "COMPANION_MAX_FOUNDER_TASKS": 3,
-    "COMPANION_MAX_TITLE": 80
+    "COMPANION_MAX_TITLE": 80,
+    "COMPANION_MAX_TRACK": 80
   },
   "notes": [
     "present is ABSENT when unknown, false when the desk is known empty. Cubie must",
@@ -46,6 +55,8 @@
     "`long` is 32-bit on an ESP32 and 64-bit on a test host, so strtol saturated on",
     "the device while every host test passed.",
     "mood is decided server-side. Deriving it on-device would be a second",
-    "definition of 'busy', free to disagree with the wall."
+    "definition of 'busy', free to disagree with the wall.",
+    "nowPlaying is ABSENT for many different reasons at once -- the office has no Spotify, nothing is playing, it is paused, an ad is on with no track attached, or Spotify could not be reached. They all mean the same thing to a robot: there is nothing to dance to. The office separates them in its own log.",
+    "inTheRoom is SERVED, not filtered on. Music on headphones or on a phone elsewhere is still playing, and a wall display showing the track has every reason to want it. Cubie is the one that must not dance to false -- a robot dancing to a silent room is a bug that looks like charm, so nobody reports it."
   ]
 }

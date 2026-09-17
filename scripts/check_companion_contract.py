@@ -196,7 +196,7 @@ def load_upstream() -> tuple[str, str]:
     return f"gh api {VO_SLUG}@{payload.get('sha', '?')[:12]}", text
 
 
-def extract(text: str) -> dict:
+def extract(text: str, cap_names: "tuple[str, ...]") -> dict:
     iface = IFACE.search(text)
     if not iface:
         fail_drift("could not find `export interface CompanionStatus` upstream at all")
@@ -214,13 +214,17 @@ def extract(text: str) -> dict:
         fail_drift("could not find `export type CompanionFounderTaskStatus` upstream")
     statuses = QUOTED.findall(status.group(1))
 
+    # Driven by the CONTRACT's own cap names rather than a list hardcoded here.
+    #
+    # It used to be hardcoded, and the failure that found it is worth keeping:
+    # adding a cap to the contract JSON crashed this script with a KeyError in
+    # `main`, because the new name was compared against a dict that could never
+    # contain it. A traceback is the one answer this guard must never give --
+    # its whole contract is "1 = drift, 2 = could not check", and a crash is
+    # neither, so whoever ran it has to read the script to find out that the
+    # payload was fine all along.
     caps = {}
-    for name in (
-        "COMPANION_MAX_PENDING",
-        "COMPANION_MAX_ONE_LINE",
-        "COMPANION_MAX_FOUNDER_TASKS",
-        "COMPANION_MAX_TITLE",
-    ):
+    for name in cap_names:
         m = re.search(rf"export const {name} = (\d+);", text)
         if not m:
             fail_drift(f"upstream no longer exports {name}")
@@ -233,7 +237,7 @@ def main() -> None:
         fail_infra(f"{CONTRACT} is missing")
     contract = json.loads(CONTRACT.read_text())
     origin, text = load_upstream()
-    up = extract(text)
+    up = extract(text, tuple(contract["caps"]))
 
     want_fields = set(contract["fields"])
     missing = sorted(want_fields - up["fields"])
