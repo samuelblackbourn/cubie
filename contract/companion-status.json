@@ -9,7 +9,7 @@
   "source": {
     "repo": "samuelblackbourn/Virtual-Office",
     "file": "server/src/companion/companionStatus.ts",
-    "taken_from_commit": "9cd75b2939e4c8d9739120de9480793660c95507",
+    "taken_from_commit": "86483f982cc52f26b42ddc52209f921628f30515",
     "file_blob_sha": "ce9feaa9b4f6d8942cc8def1941123e7bccc1d12",
     "_verify": "git rev-parse <commit>:<file> should equal file_blob_sha"
   },
