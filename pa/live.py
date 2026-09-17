@@ -49,6 +49,7 @@ import cli_brain as cli_brain_mod  # noqa: E402
 import conversation as conversation_mod  # noqa: E402
 import driver as driver_mod  # noqa: E402
 import hook as hook_mod  # noqa: E402
+import music  # noqa: E402
 import office as office_mod  # noqa: E402
 import ogg_opus  # noqa: E402
 import transcribe as transcribe_mod  # noqa: E402
@@ -623,13 +624,24 @@ async def preview_once(conversation, settings) -> tuple[bool, str, bool]:
 async def poll_office_mood(
     client, character, voice: "VoiceOverrides | None" = None,
     interval_s: float = OFFICE_POLL_S,
+    floor: "music.DanceFloor | None" = None,
+    conversation=None,
 ) -> None:
-    """Keep his resting face and ring -- and his voice -- following the office.
+    """Keep his resting face and ring -- and his voice, and his feet -- following the office.
 
-    One poll carrying two concerns, which is a conflation worth being explicit
-    about: they are the same GET of the same payload at the same cadence, and
-    splitting them would mean two requests fifteen seconds apart asking the
-    office the same question.
+    One poll carrying three concerns now, which is a conflation worth being
+    explicit about: they are the same GET of the same payload at the same
+    cadence, and splitting them would mean three requests fifteen seconds apart
+    asking the office the same question.
+
+    The music is the newest of the three and the one that most obviously
+    "deserved" its own poller -- it is the only concern here with a latency you
+    could argue about. It does not get one. A dedicated loop would be a second
+    connection, a second failure mode and a second thing to cancel, to start a
+    dance up to fifteen seconds earlier in a feature that does not beat-match at
+    all (`music.py`). The office's own client already collapses every reader
+    onto one upstream call, so the cadence is not costing Spotify anything
+    either.
 
     Failure is a reading, not an error: `_read_office` returning None becomes
     the `offline` mood -- amber and a thinking face -- because "I cannot see
@@ -643,11 +655,52 @@ async def poll_office_mood(
             character.set_office_mood(state)
             if voice is not None:
                 voice.take(state.voice if state is not None else None)
+            if floor is not None:
+                _maybe_dance(floor, character, state, conversation)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - a bad poll must not end the loop
             logger.warning("office poll raised: %r", exc)
         await asyncio.sleep(interval_s)
+
+
+def _maybe_dance(floor, character, state, conversation) -> None:
+    """Move to the music, if everything says he should.
+
+    Split out rather than inlined because the refusals are the interesting part
+    and they should be readable in one place -- and because a dance that raised
+    inside the poll would take the mood and the voice down with it. It cannot:
+    `decide` is pure and the two driver calls are the same ones the touch path
+    already makes.
+
+    An unreadable office (`state is None`) is passed through as "nothing
+    playing" rather than skipped, so the floor forgets the track it was on. When
+    the office comes back, the song that is playing then is a change -- which is
+    the right reading, since we have no idea what happened in between.
+    """
+    playing = None if state is None else state.now_playing
+    move = floor.decide(
+        playing,
+        time.monotonic(),
+        awake=not character.sleeping,
+        busy=bool(conversation is not None and conversation.busy),
+        needs_you=bool(state is not None and state.needs_you),
+    )
+    if move is None:
+        return
+    # `dance` and `gesture` are the same machinery and different in kind -- see
+    # `driver.py`. Keeping the distinction here means the log reads as what
+    # happened rather than as what was called.
+    if move.kind == "dance":
+        character.dance(move.name)
+    else:
+        character.gesture(move.name)
+    logger.info(
+        "dancing: %s (%s) to %s",
+        move.name,
+        move.kind,
+        "(nothing)" if playing is None else f"{playing.title} - {playing.artist}",
+    )
 
 
 async def tail_events(path: Path, on_event) -> None:
@@ -915,7 +968,15 @@ async def run_once(mcp_url: str, event_log: Path, idle_level: int) -> int:
             # and a mood poll on its own would be a robot reacting to news it
             # cannot discuss.
             mood_poll = (
-                asyncio.create_task(poll_office_mood(office_client, character, voice))
+                asyncio.create_task(
+                    poll_office_mood(
+                        office_client,
+                        character,
+                        voice,
+                        floor=music.DanceFloor(),
+                        conversation=conversation,
+                    )
+                )
                 if conversation is not None
                 else None
             )

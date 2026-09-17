@@ -93,6 +93,22 @@ class FounderTask:
 
 
 @dataclass(frozen=True)
+class NowPlaying:
+    """A track the office says is playing right now.
+
+    `in_the_room` is the field that decides whether he dances. Music on
+    headphones, or on a phone in another building, is still playing as far as
+    Spotify is concerned -- and a robot dancing to a silent room is a bug that
+    looks like charm, so nobody would report it.
+    """
+
+    track_id: str
+    title: str
+    artist: str
+    in_the_room: bool
+
+
+@dataclass(frozen=True)
 class OfficeState:
     """The companion payload. Field names are ours; the wire is camelCase."""
 
@@ -125,6 +141,12 @@ class OfficeState:
     #: voice, which is not the same as saying "use no overrides" -- an office
     #: too old to know about the panel must not silently reset the voice.
     voice: dict | None = None
+    #: What is playing, or None. **Absent means many things at once** -- the
+    #: office has no Spotify, nothing is playing, it is paused, an ad is on with
+    #: no track attached, or Spotify could not be reached. They all mean the
+    #: same thing here: there is nothing to dance to. The office separates them
+    #: in its own log, which is where somebody can act on them.
+    now_playing: "NowPlaying | None" = None
 
     @property
     def approvals_truncated(self) -> int:
@@ -216,7 +238,36 @@ def parse_office_state(body: Any) -> OfficeState | None:
         ts=ts,
         present=present if isinstance(present, bool) else None,
         voice=raw_voice if isinstance(raw_voice, dict) else None,
+        now_playing=_now_playing(body.get("nowPlaying")),
     )
+
+
+def _now_playing(raw: Any) -> "NowPlaying | None":
+    """Narrow the `nowPlaying` slice, or None.
+
+    Tolerant in the same direction as the rest of this module, and for a sharper
+    reason: a malformed track must not take the whole payload down with it. The
+    approvals in the same body are what the robot is actually for, and losing
+    them because a song title arrived as a number would be the worst possible
+    trade. So this returns None rather than failing the parse -- the office is
+    still read, he just does not dance.
+    """
+    if not isinstance(raw, dict):
+        return None
+    track_id = raw.get("trackId")
+    title = raw.get("title")
+    artist = raw.get("artist")
+    in_the_room = raw.get("inTheRoom")
+    if not isinstance(track_id, str) or not track_id:
+        return None
+    if not isinstance(title, str) or not isinstance(artist, str):
+        return None
+    # Not `bool(in_the_room)`: a missing flag would coerce to False, which is
+    # the safe direction, but a STRING would coerce to True and have him dance
+    # to headphones. Required and typed.
+    if not isinstance(in_the_room, bool):
+        return None
+    return NowPlaying(track_id=track_id, title=title, artist=artist, in_the_room=in_the_room)
 
 
 class OfficeClient:
