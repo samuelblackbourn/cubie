@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -117,9 +118,138 @@ def test_the_model_is_only_named_when_asked_for():
     assert args_for(model="claude-haiku-4-5")[-1] == "claude-haiku-4-5"
 
 
-def test_sessions_are_not_persisted():
-    # One directory per utterance in ~/.claude/projects, otherwise.
-    assert "--no-session-persistence" in args_for()
+# --- memory -------------------------------------------------------------
+#
+# He used to forget everything between one sentence and the next: every turn
+# was a fresh `claude -p` with `--no-session-persistence`, so "and what about
+# the other one?" could not work. Memory is carrying the session id forward and
+# resuming it.
+#
+# The flag that stopped persistence was never about speed. It stopped
+# ~/.claude/projects filling with one directory per utterance -- and resuming
+# answers that argument rather than ignoring it, because a conversation is one
+# directory instead of one per thing anyone ever said.
+
+
+def test_a_conversation_is_saved_so_it_can_be_resumed():
+    """The opposite of what this asserted before, deliberately.
+
+    A session has to be SAVED to be resumable, so memory and
+    `--no-session-persistence` are mutually exclusive by construction.
+    """
+    assert "--no-session-persistence" not in args_for()
+
+
+def test_turning_memory_off_puts_the_old_flag_back():
+    """Because the housekeeping reason is still valid for anyone who does not
+    want memory: without it, one directory per utterance."""
+    assert "--no-session-persistence" in args_for(memory_s=0)
+
+
+def test_a_conversation_in_progress_is_resumed():
+    brain = cli_brain.CliBrain(FakeOffice())
+    args = brain.build_args("hello", "sys", Path("/tmp/t.jsonl"), resume="abc-123")
+    assert "--resume" in args
+    assert args[args.index("--resume") + 1] == "abc-123"
+
+
+def test_the_two_flags_are_never_both_present():
+    """They contradict each other: one says do not save, the other says
+    continue what was saved. Either alone is a coherent build; together the
+    behaviour depends on which the CLI happens to read last."""
+    for kwargs in ({}, {"memory_s": 0}, {"memory_s": 60}):
+        brain = cli_brain.CliBrain(FakeOffice(), **kwargs)
+        for resume in (None, "abc-123"):
+            args = brain.build_args("hi", "sys", Path("/tmp/t.jsonl"), resume=resume)
+            assert not ("--resume" in args and "--no-session-persistence" in args), (
+                kwargs,
+                resume,
+            )
+
+
+def test_memory_off_never_asks_to_resume():
+    """`_resumable` is the only thing that decides, so it has to respect the
+    switch rather than relying on the caller to."""
+    brain = cli_brain.CliBrain(FakeOffice(), memory_s=0)
+    brain._session_id = "abc-123"
+    assert brain._resumable() is None
+
+
+def test_a_conversation_ends_when_the_person_walks_away():
+    """Otherwise one session runs for weeks, growing slower and more expensive
+    every turn until it overruns its context -- a failure that arrives as a
+    gradual slowdown rather than as an error."""
+    brain = cli_brain.CliBrain(FakeOffice(), memory_s=60)
+    brain._session_id = "abc-123"
+    brain._last_turn_at = time.monotonic() - 3600
+    assert brain._resumable() is None
+    assert brain._session_id is None, "the stale conversation must be let go"
+
+
+def test_a_recent_conversation_is_still_open():
+    brain = cli_brain.CliBrain(FakeOffice(), memory_s=1800)
+    brain._session_id = "abc-123"
+    brain._last_turn_at = time.monotonic() - 5
+    assert brain._resumable() == "abc-123"
+
+
+def test_the_clock_moves_even_when_the_cli_names_no_session():
+    """A nameless turn is still someone speaking. Leaving the clock stale would
+    expire a conversation that is actually in progress."""
+    brain = cli_brain.CliBrain(FakeOffice(), memory_s=1800)
+    brain._session_id = "abc-123"
+    brain._last_turn_at = 0.0
+    brain._remember(None)
+    assert brain._session_id == "abc-123"
+    assert brain._last_turn_at > 0.0
+
+
+def test_the_session_is_taken_from_the_cli_not_invented():
+    payload = json.dumps(
+        {"result": "hello", "is_error": False, "session_id": "sid-from-cli"}
+    )
+    parsed = cli_brain.CliBrain(FakeOffice())._payload_from(payload.encode())
+    assert parsed.get("session_id") == "sid-from-cli"
+
+
+def test_a_conversation_that_cannot_be_resumed_costs_nobody_an_answer():
+    """The CLI is upgraded, ~/.claude is cleared, the session ages out. None of
+    those are the speaker's fault and none should produce "I cannot think
+    straight" -- the conversation is dropped and the question asked again."""
+    brain = cli_brain.CliBrain(FakeOffice())
+    brain._session_id = "gone"
+    brain._last_turn_at = time.monotonic()
+    tried = []
+
+    async def fake_run(transcript, system, resume):
+        tried.append(resume)
+        if resume is not None:
+            raise brain_mod.BrainError("no conversation found with that id")
+        return cli_brain._Turn(
+            text="here you go", actions=(), face=None, session_id="fresh"
+        )
+
+    brain._run = fake_run
+    reply = asyncio.run(brain.respond("what about the other one?", None))
+
+    assert tried == ["gone", None], tried
+    assert reply.speech == "here you go"
+    assert brain._session_id == "fresh", "the new conversation replaces the lost one"
+
+
+def test_a_second_failure_is_a_real_fault_and_surfaces():
+    """Retrying forever would turn one broken turn into an unbounded loop, and
+    hide the actual error behind it."""
+    brain = cli_brain.CliBrain(FakeOffice())
+    brain._session_id = "gone"
+    brain._last_turn_at = time.monotonic()
+
+    async def always_fails(transcript, system, resume):
+        raise brain_mod.BrainError("the brain is genuinely broken")
+
+    brain._run = always_fails
+    with pytest.raises(brain_mod.BrainError, match="genuinely broken"):
+        asyncio.run(brain.respond("hello", None))
 
 
 def test_the_mcp_config_names_the_server_and_the_log():
@@ -379,3 +509,31 @@ def test_draining_never_replaces_the_timeout_with_its_own_error():
             raise OSError("pipe already closed")
 
     assert asyncio.run(cli_brain.CliBrain._drain(Hostile())) == ""
+
+
+def test_an_expired_login_says_so_rather_than_looking_broken():
+    """This exact failure cost an evening.
+
+    The CLI's claude.ai OAuth session lapses after some weeks. Every turn then
+    fails and he falls back to "I cannot think straight just now" -- which
+    reads as a robot that has broken rather than a credential that needs
+    renewing, and nothing anywhere names the difference.
+    """
+    payload = json.dumps(
+        {
+            "is_error": True,
+            "result": "Failed to authenticate: OAuth session expired and "
+                      "could not be refreshed",
+        }
+    )
+    with pytest.raises(brain_mod.BrainError, match="login on this machine has expired"):
+        cli_brain.CliBrain(FakeOffice())._payload_from(payload.encode())
+
+
+def test_an_ordinary_error_is_still_reported_as_itself():
+    """The auth message must not swallow everything else -- an over-eager
+    pattern would report every failure as a credential problem and send the
+    next person to renew a login that was never the issue."""
+    payload = json.dumps({"is_error": True, "result": "model overloaded"})
+    with pytest.raises(brain_mod.BrainError, match="model overloaded"):
+        cli_brain.CliBrain(FakeOffice())._payload_from(payload.encode())

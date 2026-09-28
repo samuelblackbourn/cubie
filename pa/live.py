@@ -465,8 +465,31 @@ def choose_brain(office_client):
     # because the API requires one, and the CLI does not -- letting it pick its
     # own default means one fewer place that pins a model by hand.
     return cli_brain_mod.CliBrain(
-        office_client, model=os.environ.get("CUBIE_MODEL", "")
+        office_client,
+        model=os.environ.get("CUBIE_MODEL", ""),
+        memory_s=memory_seconds(),
     )
+
+
+def memory_seconds() -> float:
+    """How long a conversation stays open, from `CUBIE_MEMORY_S`.
+
+    Falls back rather than raising: a typo in an environment variable should
+    cost the documented default and a line in the log, not a robot that will
+    not start. Zero and negative values are legitimate -- they turn memory off
+    -- so only text that is not a number is a mistake.
+    """
+    raw = os.environ.get("CUBIE_MEMORY_S")
+    if raw is None or raw == "":
+        return cli_brain_mod.DEFAULT_MEMORY_S
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "CUBIE_MEMORY_S=%r is not a number; using %.0fs",
+            raw, cli_brain_mod.DEFAULT_MEMORY_S,
+        )
+        return cli_brain_mod.DEFAULT_MEMORY_S
 
 
 def route_event(event: dict, character) -> None:

@@ -747,6 +747,59 @@ while the identical command worked from a shell that did not have it set. So
 Choosing the CLI brain means choosing the CLI's login, and that is enforced
 rather than assumed.
 
+### He remembers the last half hour
+
+Until now every turn was a fresh `claude -p` with `--no-session-persistence`,
+so "and what about the other one?" could not work — he had no idea there had
+been a first one.
+
+Memory is the session id, carried forward. `--output-format json` already
+returns a `session_id`; `CliBrain` keeps it and passes `--resume` on the next
+turn. **`--continue` cannot do this job**: it means "the most recent session
+for this working directory", and every turn runs in a brand new
+`TemporaryDirectory`, so there is never one to continue.
+
+The flag it replaces was never about speed. It stopped `~/.claude/projects`
+filling with one directory per utterance — and resuming answers that argument
+rather than ignoring it, because a conversation becomes one directory instead
+of one per thing anyone ever said. The two are mutually exclusive by
+construction: a session has to be saved to be resumable, and `build_args`
+refuses to emit both.
+
+**A conversation ends when the person walks away.** `CUBIE_MEMORY_S`, 30
+minutes by default, and then he starts fresh. The alternative — one session
+carried for weeks — gets slower and more expensive every turn until it
+overruns its context, and that failure arrives as a gradual slowdown rather
+than as an error. Zero turns memory off.
+
+**A conversation that cannot be resumed costs nobody an answer.** The CLI gets
+upgraded, `~/.claude` gets cleared, a session ages out. None of those are the
+speaker's fault, so a failed resume drops the conversation and asks the
+question again from a clean start — once. A second failure is a real fault and
+surfaces.
+
+**It needs somewhere to write.** Saving a session means writing to
+`~/.claude/projects`, and the unit has `ProtectHome=read-only`. Hence
+`ReadWritePaths=/home/sam/.claude`. That is the same directive that broke the
+unit when it was pointed at a Hugging Face cache — and the difference is the
+one that mattered then: this path *certainly exists*, because the CLI keeps its
+credentials there and nothing works at all without it.
+
+### An expired login says so
+
+The CLI's claude.ai OAuth session lapses after some weeks. When it does, every
+turn fails and he falls back to "I can't think straight just now" — which reads
+as a robot that has broken rather than a credential that needs renewing.
+Nothing named the difference, and it cost an evening: the symptom is
+indistinguishable from the brain being misconfigured, which is what had
+genuinely been wrong the time before.
+
+`is_error` payloads that mention authentication now raise a message naming
+`claude auth login` and the user to run it as. Matched loosely, because the
+wording belongs to the CLI and a miss costs a less helpful message rather than
+a wrong one — and a test asserts an ordinary failure is still reported as
+itself, so the pattern cannot swallow everything.
+
 ### What it costs
 
 A spawn per turn. Measured on office-server: **~3.7 s** wall for a trivial
