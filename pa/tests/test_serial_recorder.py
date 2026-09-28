@@ -35,11 +35,25 @@ SCRIPT = DEPLOY / "cubie-serial.sh"
 UNIT = DEPLOY / "cubie-serial.service"
 
 
-def unit_directives(name: str) -> list[str]:
-    out = []
+def unit_directives(name: str, section: str | None = None) -> list[str]:
+    """Values of one directive, optionally only within one section.
+
+    Section-aware because a directive in the wrong section is not an error --
+    systemd logs `Unknown key name ... ignoring`, starts the unit, reports it
+    active, and silently does not apply it. A test that only checks the
+    directive is PRESENT passes against a unit where it does nothing, which is
+    exactly what happened to StartLimitIntervalSec.
+    """
+    out: list[str] = []
+    current = None
     for line in UNIT.read_text().splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current = stripped[1:-1]
+            continue
+        if section is not None and current != section:
             continue
         match = re.match(rf"^{re.escape(name)}=(.*)$", stripped)
         if match:
@@ -114,8 +128,38 @@ def test_it_restarts_because_a_reset_is_the_moment_worth_catching() -> None:
 def test_it_never_gives_up_overnight() -> None:
     """systemd's default start-rate limit stops a unit after a few rapid
     restarts. A robot unplugged at 6pm would leave the recorder dead by 6:01
-    and the crash at 2am uncaptured."""
-    assert unit_directives("StartLimitIntervalSec") == ["0"]
+    and the crash at 2am uncaptured.
+
+    Asserted IN [Unit], because that is the only place systemd reads it. The
+    first version of this unit put it in [Service] and shipped; systemd logged
+    `Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring`,
+    started anyway, reported active, and left the rate limit on. The earlier
+    version of this test passed against that unit, because it only asked
+    whether the line existed.
+    """
+    assert unit_directives("StartLimitIntervalSec", section="Unit") == ["0"], (
+        "StartLimitIntervalSec must be in [Unit]; in [Service] systemd ignores "
+        "it and the unit still reports active"
+    )
+
+
+def test_no_directive_sits_in_a_section_systemd_will_ignore() -> None:
+    """The general form of the bug above.
+
+    systemd does not fail a unit over a misplaced key -- it warns and carries
+    on -- so a directive in the wrong section is a silent no-op. These are the
+    ones this unit depends on, and each belongs to exactly one section.
+    """
+    unit_only = ("StartLimitIntervalSec", "StartLimitBurst", "Description", "After")
+    service_only = ("ExecStart", "Restart", "RestartSec", "User", "Type")
+    for name in unit_only:
+        assert not unit_directives(name, section="Service"), (
+            f"{name} is in [Service], where systemd ignores it"
+        )
+    for name in service_only:
+        assert not unit_directives(name, section="Unit"), (
+            f"{name} is in [Unit], where systemd ignores it"
+        )
 
 
 def test_it_writes_to_the_journal_rather_than_its_own_file() -> None:
