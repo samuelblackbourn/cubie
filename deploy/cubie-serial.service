@@ -1,0 +1,57 @@
+[Unit]
+# Records Cubie's serial console into the journal, continuously.
+#
+# The crash this exists for has never been captured. It happens rarely, and
+# every attempt has needed a person watching a terminal at the right second.
+# This removes the person: he is on the same desk as this machine, so he
+# records himself.
+#
+# Read it alongside the rest of the stack, which is the point -- same clock,
+# same command:
+#
+#   journalctl -u cubie-serial -u cubie-character -u stackchan-gateway \
+#       --since "20 min ago"
+#
+# The line that settles the crash is the RESET REASON at the top of the next
+# boot -- `rst:0x...`. RTCWDT_BROWN_OUT_RST means power, and points at the LED
+# ring and how he is supplied. A `Guru Meditation` with a backtrace means
+# software, and names the function. Neither has ever been seen.
+Description=Cubie serial console recorder (catches the crash nobody is awake for)
+After=dev-serial-by\x2did.device
+
+[Service]
+Type=simple
+User=sam
+# The serial device is group dialout. The alternative -- running this as root
+# -- would give a process whose only job is to READ a character device the
+# ability to do anything at all.
+SupplementaryGroups=dialout
+ExecStart=/home/sam/cubie/deploy/cubie-serial.sh
+
+# Restart is not error handling here, it is the DESIGN. CoreS3 speaks USB-CDC
+# from the ESP32 itself, so a reboot makes the USB device vanish and reappear,
+# often under a different /dev/ttyACM number. `cat` exits at exactly the moment
+# worth recording, and this is what gets the recorder back in time to catch the
+# boot that follows -- including the reset reason.
+Restart=always
+RestartSec=1
+# Unplugged, or not yet plugged in: retry quietly forever rather than giving up
+# after five tries, which is what a default rate limit would do overnight.
+StartLimitIntervalSec=0
+
+# Everything it needs is one character device it does not own.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+# Read-only would be ideal and is not available: opening a tty for reading
+# still requires write access for the line discipline, which is what `stty`
+# above sets. Narrowed to the serial devices and nothing else.
+DeviceAllow=char-ttyUSB rw
+DeviceAllow=char-ttyACM rw
+
+[Install]
+WantedBy=multi-user.target

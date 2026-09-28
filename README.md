@@ -785,6 +785,58 @@ unit when it was pointed at a Hugging Face cache — and the difference is the
 one that mattered then: this path *certainly exists*, because the CLI keeps its
 credentials there and nothing works at all without it.
 
+### Catching the crash nobody is awake for
+
+He crashes. Rarely, unpredictably, and always in the same shape from the
+gateway's side:
+
+```
+ESP32 disconnected: close_class=ConnectionClosedError sent_code=1011
+    sent_reason='keepalive ping timeout' last_frame_age_s=38.484 lifetime_s=110
+```
+
+`sent_code=1011` means the GATEWAY gave up, not the device: it stopped hearing
+from him and closed the socket. `last_frame_age_s` says when he actually went
+quiet — about 25 seconds after finishing an answer — and the absence of a
+reconnect says he did not reboot. He hangs.
+
+A hang and a panic have opposite fixes, and the one line that tells them apart
+is printed **once**, on the serial console, at the moment it happens: the reset
+reason at the top of the next boot. `RTCWDT_BROWN_OUT_RST` is power, and points
+at the LED ring and the supply. A `Guru Meditation` with a backtrace is
+software, and names the function.
+
+Every attempt to capture that failed the same way — it needed a person sitting
+with `cat /dev/cu.usbmodem*` open on a laptop at the right second, and across
+several sessions that produced **zero** backtraces, because he never crashed
+while anyone was watching.
+
+He is on the same desk as the machine running everything else, so
+`deploy/cubie-serial.service` has him record himself:
+
+```
+sudo systemctl enable --now cubie-serial
+journalctl -u cubie-serial -u cubie-character -u stackchan-gateway --since "20 min ago"
+```
+
+Into the journal rather than a file of its own, because the point is the
+**shared clock**: a crash is only diagnosable next to the turn that preceded
+it, and that one command interleaves them.
+
+Three details are load-bearing. The port is resolved through
+`/dev/serial/by-id`, since `ttyACM0` is assigned in enumeration order and moves.
+`Restart=always` is the design rather than error handling — CoreS3 speaks
+USB-CDC from the ESP32 itself, so a reboot makes the device vanish and
+reappear, and `cat` exits at exactly the moment worth recording.
+`StartLimitIntervalSec=0` stops systemd giving up after a few rapid restarts,
+which would otherwise leave an unplugged robot's recorder dead by teatime and
+the crash at 2am uncaptured.
+
+And a recorder that fails **silently** is worse than none, because it is
+believed: exiting 0 having found no port would leave the service `active`, the
+journal empty, and the honest reading "he has not crashed yet". It exits
+non-zero and says so, and a test asserts it.
+
 ### An expired login says so
 
 The CLI's claude.ai OAuth session lapses after some weeks. When it does, every
