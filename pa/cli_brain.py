@@ -56,9 +56,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -81,6 +83,28 @@ SERVER_KEY = "cubie"
 #: cover a spawn, a cold model call and a couple of tool round trips; short
 #: enough that the failure is still legible as a failure.
 DEFAULT_TIMEOUT_S = 25.0
+
+#: How long a conversation stays open, in seconds. Within this, each turn
+#: RESUMES the last one and he remembers what was said; past it he starts
+#: fresh.
+#:
+#: 30 minutes because a conversation at a desk ends when the person walks away,
+#: not at a turn count. The alternative -- one session forever -- gets slower
+#: and more expensive every turn and eventually overruns its context, and the
+#: failure would arrive as a gradual slowdown rather than as an error.
+#:
+#: Zero or less disables memory entirely and restores the old behaviour,
+#: including `--no-session-persistence`. That flag was never about speed: it
+#: stopped ~/.claude/projects filling with one directory per utterance. With
+#: resume that argument is answered -- a conversation is ONE directory, not one
+#: per thing anyone ever said.
+DEFAULT_MEMORY_S = 1800.0
+
+#: What an expired login looks like coming back from the CLI, so it can be
+#: reported as itself rather than as a brain that has stopped working. Matched
+#: loosely on purpose: the wording is the CLI's to change, and a miss here
+#: costs a less helpful message rather than a wrong one.
+AUTH_HINT = re.compile(r"authenticat|oauth|credential|logged.?out|log ?in", re.I)
 
 #: Where `office_mcp.py` lives, so the config can name it without the CLI
 #: needing to know anything about this repo's layout.
@@ -117,6 +141,9 @@ class _Turn:
     text: str
     actions: tuple[ActionRecord, ...]
     face: str | None
+    #: What the CLI called this conversation. Carried back so the next turn can
+    #: `--resume` it; None when the CLI did not say, which is not an error.
+    session_id: str | None = None
 
 
 def read_turn_log(path: Path) -> tuple[tuple[ActionRecord, ...], str | None]:
@@ -166,6 +193,7 @@ class CliBrain:
         executable: str = "claude",
         timeout_s: float = DEFAULT_TIMEOUT_S,
         python: str | None = None,
+        memory_s: float = DEFAULT_MEMORY_S,
     ) -> None:
         self._office = office
         #: Kept as an attribute rather than baked into the args so the startup
@@ -177,14 +205,39 @@ class CliBrain:
         #: default, which is the gateway's -- the same one this module is
         #: running on, so `office` and `brain_tools` are importable from it.
         self.python = python or sys.executable
+        #: How long a conversation stays open. See DEFAULT_MEMORY_S.
+        self.memory_s = memory_s
+        #: The conversation in progress, and when it was last spoken to. Both
+        #: live on the instance rather than on disk: a restart is a new
+        #: conversation, which is the honest behaviour -- he did not hear what
+        #: was said before he was restarted.
+        self._session_id: str | None = None
+        self._last_turn_at = 0.0
 
     # -- the contract ----------------------------------------------------
 
     async def respond(self, transcript: str, state: Any) -> brain_mod.Reply:
         system = brain_mod.build_system_prompt(state)
-        with tempfile.TemporaryDirectory(prefix="cubie-turn-") as workdir:
-            log_path = Path(workdir) / "actions.jsonl"
-            turn = await self._invoke(transcript, system, log_path, workdir)
+        resume = self._resumable()
+
+        try:
+            turn = await self._run(transcript, system, resume)
+        except brain_mod.BrainError:
+            # A stored session can stop being resumable for reasons that are
+            # nobody's fault: the CLI was upgraded, ~/.claude was cleared, the
+            # session aged out. None of those should cost the person an answer,
+            # so the conversation is dropped and the question asked again from
+            # a clean start. Only once -- a second failure is a real fault and
+            # must surface rather than loop.
+            if resume is None:
+                raise
+            logger.warning(
+                "cli brain: could not resume the conversation; starting a new one"
+            )
+            self._session_id = None
+            turn = await self._run(transcript, system, None)
+
+        self._remember(turn.session_id)
         return brain_mod.Reply(
             speech=brain_mod.trim_speech(turn.text),
             face=turn.face,
@@ -192,7 +245,50 @@ class CliBrain:
             incomplete=not turn.text,
         )
 
+    # -- memory ----------------------------------------------------------
+
+    def _resumable(self) -> str | None:
+        """The conversation to continue, or None to start a new one.
+
+        The clock is monotonic because this is an elapsed time and wall-clock
+        can step -- an NTP correction must not silently end a conversation or
+        revive an ancient one.
+        """
+        if self.memory_s <= 0 or not self._session_id:
+            return None
+        idle = time.monotonic() - self._last_turn_at
+        if idle > self.memory_s:
+            logger.info(
+                "cli brain: %.0f minutes since the last turn, so this is a new "
+                "conversation",
+                idle / 60,
+            )
+            self._session_id = None
+            return None
+        return self._session_id
+
+    def _remember(self, session_id: str | None) -> None:
+        """Hold on to the conversation this turn belonged to.
+
+        The timestamp moves even when the CLI named no session, because the
+        person still spoke: letting a nameless turn leave the clock stale would
+        expire a conversation that is actually in progress.
+        """
+        if self.memory_s <= 0:
+            return
+        if session_id:
+            self._session_id = session_id
+        self._last_turn_at = time.monotonic()
+
     # -- the invocation --------------------------------------------------
+
+    async def _run(
+        self, transcript: str, system: str, resume: str | None
+    ) -> _Turn:
+        """One invocation, in a working directory that lives only for it."""
+        with tempfile.TemporaryDirectory(prefix="cubie-turn-") as workdir:
+            log_path = Path(workdir) / "actions.jsonl"
+            return await self._invoke(transcript, system, log_path, workdir, resume)
 
     def mcp_config(self, log_path: Path) -> dict:
         """The `--mcp-config` payload, as data so a test can assert its shape.
@@ -220,7 +316,9 @@ class CliBrain:
             }
         }
 
-    def build_args(self, transcript: str, system: str, log_path: Path) -> list[str]:
+    def build_args(
+        self, transcript: str, system: str, log_path: Path, resume: str | None = None
+    ) -> list[str]:
         """The whole command line, pure so it is table-testable.
 
         Same reasoning as `agents/claudeCommand.ts` in the office: the exact
@@ -246,19 +344,40 @@ class CliBrain:
             *[f"mcp__{SERVER_KEY}__{tool['name']}" for tool in brain_mod.TOOLS],
             "--output-format",
             "json",
-            # Each turn is a fresh conversation with no memory, so persisting a
-            # session per utterance would fill ~/.claude/projects with one
-            # directory per thing anyone ever said to him.
-            "--no-session-persistence",
         ]
+        # Memory is one flag each way, and they are opposites: a session has to
+        # be SAVED to be resumable, so `--no-session-persistence` and `--resume`
+        # cannot both be right.
+        #
+        # `--resume` rather than `--continue`: continue means "the most recent
+        # session for this working directory", and every turn runs in a brand
+        # new TemporaryDirectory, so there is never one to continue. The id is
+        # carried in memory instead, which also survives the workdir being
+        # thrown away at the end of each turn.
+        # `and self.memory_s > 0` is not redundant with `_resumable`, which is
+        # the only caller that currently passes one. It makes the two flags
+        # mutually exclusive HERE, so the contradiction cannot be reintroduced
+        # by a future caller that reads the session id from somewhere else.
+        if resume and self.memory_s > 0:
+            args += ["--resume", resume]
+        if self.memory_s <= 0:
+            # The original reason for this flag, preserved for anyone who turns
+            # memory off: without it, ~/.claude/projects grows a directory per
+            # utterance. With resume it grows one per CONVERSATION instead.
+            args.append("--no-session-persistence")
         if self.model:
             args += ["--model", self.model]
         return args
 
     async def _invoke(
-        self, transcript: str, system: str, log_path: Path, workdir: str
+        self,
+        transcript: str,
+        system: str,
+        log_path: Path,
+        workdir: str,
+        resume: str | None = None,
     ) -> _Turn:
-        args = self.build_args(transcript, system, log_path)
+        args = self.build_args(transcript, system, log_path, resume)
         logger.debug("cli brain: %s", " ".join(args[:2]))
 
         try:
@@ -321,8 +440,14 @@ class CliBrain:
                 f"{stderr.decode(errors='replace')[:200]}"
             )
 
-        text = self._text_from(stdout)
-        return _Turn(text=text, actions=actions, face=face)
+        payload = self._payload_from(stdout)
+        session_id = payload.get("session_id")
+        return _Turn(
+            text=self._speech_in(payload),
+            actions=actions,
+            face=face,
+            session_id=session_id if isinstance(session_id, str) else None,
+        )
 
     @staticmethod
     async def _drain(process: Any, limit: int = 300) -> str:
@@ -344,7 +469,21 @@ class CliBrain:
         return "; ".join(parts)
 
     def _text_from(self, stdout: bytes) -> str:
-        """Pull the answer out of `--output-format json`.
+        """The answer alone. Kept for callers and tests that want only words."""
+        return self._speech_in(self._payload_from(stdout))
+
+    def _speech_in(self, payload: dict) -> str:
+        """The spoken part of an already-validated payload."""
+        result = payload.get("result")
+        return result.strip() if isinstance(result, str) else ""
+
+    def _payload_from(self, stdout: bytes) -> dict:
+        """Parse and validate `--output-format json`, once per turn.
+
+        Separate from reading the speech out of it because a turn needs two
+        things from the same document -- the words and the session to resume --
+        and parsing it twice would be two chances to disagree about whether it
+        was an error.
 
         Strict about the shape rather than forgiving: `stdout.strip()` would
         happily speak a JSON blob, an error message or an MCP warning, and the
@@ -362,17 +501,26 @@ class CliBrain:
         if not isinstance(payload, dict):
             raise brain_mod.BrainError("claude's JSON was not an object")
         if payload.get("is_error"):
-            raise brain_mod.BrainError(
-                f"claude reported an error: {str(payload.get('result'))[:200]}"
-            )
+            detail = str(payload.get("result"))
+            # An expired login is the one failure worth naming, because it is
+            # the one that looks like something else. The CLI keeps a claude.ai
+            # OAuth session that lapses after some weeks; when it does, every
+            # turn fails and he falls back to "I cannot think straight just
+            # now" -- which reads as a robot that has broken, not as a
+            # credential that needs renewing. It cost an evening once.
+            if AUTH_HINT.search(detail):
+                raise brain_mod.BrainError(
+                    "the claude login on this machine has expired -- run "
+                    f"`claude auth login` as this service's user ({detail[:120]})"
+                )
+            raise brain_mod.BrainError(f"claude reported an error: {detail[:200]}")
         denials = payload.get("permission_denials") or []
         if denials:
             # Not fatal -- he may still have said something useful -- but it
             # means a tool he reached for was refused, which is a
             # misconfiguration rather than a conversation.
             logger.warning("cli brain: %d tool call(s) were denied", len(denials))
-        result = payload.get("result")
-        return result.strip() if isinstance(result, str) else ""
+        return payload
 
 
 def available(executable: str = "claude") -> bool:

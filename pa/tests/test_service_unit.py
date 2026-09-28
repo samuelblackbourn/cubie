@@ -111,19 +111,46 @@ def test_the_cache_is_where_huggingface_will_look() -> None:
     )
 
 
-def test_no_directive_points_into_a_home_that_may_not_exist() -> None:
-    """The first attempt at this fix, which was worse than the bug.
+def test_the_cache_is_not_granted_through_the_home_directory_again() -> None:
+    """The first attempt at the whisper fix, which was worse than the bug.
 
     `ReadWritePaths=/home/sam/.cache/huggingface` requires the path to already
     exist. It did not -- this user never had a Hugging Face cache, because the
-    gateway keeps its own under its StateDirectory. systemd refused to start
-    the unit at all.
+    gateway keeps its own under its StateDirectory -- and systemd refused to
+    start the unit at all (status=226/NAMESPACE).
+
+    THE RULE IS NOT "nothing under /home". This test said that for a while and
+    it was over-general: it would have blocked
+    `ReadWritePaths=/home/sam/.claude`, which is correct and necessary, because
+    that directory certainly exists -- it is where the CLI keeps the
+    credentials, so nothing works at all without it.
+
+    The real rule is that a ReadWritePaths path must be one the deploy host is
+    CERTAIN to have, and a test cannot check that. So this pins the specific
+    path that actually broke, and the docstring carries the reasoning for the
+    next one.
     """
-    for path in " ".join(directives("ReadWritePaths")).split():
-        assert not path.startswith("/home/"), (
-            f"ReadWritePaths={path} names a path under /home that systemd will "
-            "refuse to start the unit without (status=226/NAMESPACE)"
-        )
+    paths = " ".join(directives("ReadWritePaths")).split()
+    assert "/home/sam/.cache/huggingface" not in paths, (
+        "the whisper cache is granted with CacheDirectory, which systemd "
+        "creates; ReadWritePaths would refuse to start the unit when the path "
+        "does not exist yet"
+    )
+
+
+def test_the_cli_brain_can_save_a_conversation() -> None:
+    """Memory is `--resume`, and a session has to be saved to be resumed.
+
+    That write goes to ~/.claude/projects, which ProtectHome=read-only forbids.
+    Without this the very first turn after enabling memory fails, and it fails
+    as `brain failed:` with no mention of permissions anywhere -- the same
+    shape as the whisper cache bug, which took an evening.
+    """
+    paths = " ".join(directives("ReadWritePaths")).split()
+    assert "/home/sam/.claude" in paths, (
+        "the CLI brain cannot persist a session, so --resume has nothing to "
+        f"resume: ReadWritePaths={paths!r}"
+    )
 
 
 def test_the_failure_is_recorded_where_someone_will_look() -> None:

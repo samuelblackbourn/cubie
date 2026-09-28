@@ -167,6 +167,29 @@ ProtectHome=read-only
 CacheDirectory=cubie-character
 Environment=HF_HOME=/var/cache/cubie-character
 
+# Where the CLI brain keeps the conversation, once it has one.
+#
+# Memory is `--resume <session_id>`, and a session has to be SAVED to be
+# resumed -- which means writing to ~/.claude/projects, which ProtectHome
+# forbids. Without this, every turn fails the moment memory is switched on.
+#
+# Unlike the Hugging Face cache, this path CERTAINLY EXISTS: it is where the
+# CLI keeps the credentials, so `claude auth login` has already created it and
+# nothing works at all without it. That is the difference that made
+# ReadWritePaths the wrong tool there and the right one here -- the earlier
+# failure was a path that did not exist (status=226/NAMESPACE), not the fact
+# that it was under /home.
+#
+# Deliberately NOT CLAUDE_CONFIG_DIR into a StateDirectory. That would move the
+# whole config directory, credentials included, away from where the login
+# actually put them -- trading a permissions problem for an authentication one.
+#
+# StateDirectory rather than CacheDirectory would be the shape if this were
+# relocatable: a cache may be deleted at any time and a conversation may not.
+# It is not relocatable, so the distinction is academic here and recorded in
+# case that changes.
+ReadWritePaths=/home/sam/.claude
+
 # NOT VERIFIED FROM THE SANDBOX: whether `claude` can run under
 # ProtectHome=read-only. The CLI keeps state under ~/.claude, and this unit
 # makes /home read-only for the process. `--no-session-persistence` stops the
